@@ -9,6 +9,7 @@ flatpak-rebuilder = 'flatpak_rebuilder.main:main'
 
 [tool.poetry.dependencies]
 python = "^3.10"
+GitPython = "^3.1.27"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.1.1"

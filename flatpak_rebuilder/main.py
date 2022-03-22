@@ -42,6 +42,7 @@ def parse_args() -> Namespace:
     parser.add_argument('remote', help="The name of the remote repository, i.e. flathub")
     parser.add_argument('flatpak_name', help="The name of the flatpak to reproduce")
     parser.add_argument('-i','--installation',help="specifies the local installation to use, by default it will use the global flatpak install.")
+    parser.add_argument('-int','--interactive',help="If set, flatpaks install and build command will run in interactive mode, asking you for input.", action='store_true')
 
     return parser.parse_args()
 
@@ -97,15 +98,24 @@ def setup_build_dir(git_url: str, dir: str, build_time: datetime):
             if file.endswith(".json") or file.endswith(".yml"):
                 os.utime(os.path.join(root, file), (build_time_float, build_time_float))
 
-def install_runtime(remote: str, runtime: str, installation: str, interractive=True, commit: str | None = None) -> Result[None]:
+def install_runtime(remote: str, runtime: str, installation: str, interactive: bool, commit: str | None = None) -> Result[None]:
     if not installation_exists(installation):
         return Err(installation + " is not a valid flatpak installation, please set it up manually.")
-    install = subprocess.run(["flatpak", "install", remote, runtime, "--installation="+installation]) 
+
+    cmd = ["flatpak", "install", remote, runtime, "--installation="+installation]
+    if not interactive:
+        cmd.append('--noninteractive')
+
+    install = subprocess.run(cmd) 
+
     if install.returncode != 0:
        return Err(install.stderr.decode('UTF-8')) 
-    cmd = ["flatpak", "update", remote, runtime, "--installation="+installation]
+
+    cmd = ["flatpak", "update", runtime, "--installation="+installation]
     if commit is not None:
-        cmd += "--commit="+commit
+        cmd.append("--commit="+commit)
+    if not interactive:
+        cmd.append("--noninteractive")
 
     downgrade = subprocess.run(cmd) 
 
@@ -121,7 +131,14 @@ def get_build_repo(remote: str, package: str) -> Result[str]:
             return Err("Only flathub is supported for now.")
 
 def rebuild(dir: str, installation: str):
-    pass
+    os.chdir(dir)
+    manifests = [file for file in os.listdir() if (file.endswith(".yml") or file.endswith(".json"))]
+    if len(manifests) > 1:
+        pass
+    else:
+        manifest = manifests[0]
+    cmd = ["flatpak-builder", "--disable-cache", "--force-clean", "--installation="+installation, "build", manifest]
+    subprocess.run(cmd)
 
 def main():
     args = parse_args()
@@ -134,10 +151,11 @@ def main():
         installation = args.installation
     else:
         installation = "default"
+    interactive = args.interactive
     date = flatpak_date_to_datetime(metadatas['Date'])
     sdk_runtime_commit = find_runtime_commit_for_date(args.remote, sdk_runtime, date).unwrap()
-    install_runtime(remote, runtime,installation=installation)
-    install_runtime(remote, sdk_runtime,installation=installation,commit=sdk_runtime_commit)
+    install_runtime(remote, runtime,interactive=interactive, installation=installation)
+    install_runtime(remote, sdk_runtime,interactive=interactive, installation=installation,commit=sdk_runtime_commit)
     build_repo = get_build_repo(remote, package).unwrap()
     setup_build_dir(build_repo, package, date) 
     rebuild(package, installation)

@@ -7,9 +7,10 @@ import shutil
 from git.repo import Repo
 from datetime import datetime
 import time
+import json
 from typing import Generic, TypeVar
 
-# When you want to write Rust but you use python
+# Not super useful since I unwrap every results, but I just wanted to play around with python's type annotations.
 T = TypeVar('T')
 class Ok(Generic[T]):
     def __init__(self, value: T) -> None:
@@ -32,7 +33,7 @@ class Err(Generic[T]):
     def is_err(self) -> bool:
         return True
     def unwrap(self) -> T:
-        raise Exception("Tried to unwrap an Err, which had the following erro: " + self.reason)
+        raise Exception("Tried to unwrap an Err, which had the following error: " + self.reason)
     def get_or_none(self) -> T | None:
         return None
 
@@ -62,7 +63,7 @@ def parse_args() -> Namespace:
     return parser.parse_args()
 
 def flatpak_info(installation: str, package: str) -> Result[dict[str, str]]:
-    result = subprocess.run(["flatpak", "info", "installation=" + installation, package], capture_output=True) 
+    result = subprocess.run(["flatpak", "info", "--installation=" + installation, package], capture_output=True) 
     if result.returncode == 0:
         output = result.stdout.decode('UTF-8')
         return Ok(cmd_output_to_dict(output))
@@ -93,7 +94,7 @@ def flatpak_date_to_datetime(date: str) -> datetime:
     return datetime.fromisoformat(time + time_zone)
 
 def installation_exists(name: str) -> bool:
-    result = subprocess.run(["flatpak", "--installation="+name,"list"]) 
+    result = subprocess.run(["flatpak", "--installation="+name,"list"], capture_output=True) 
     return result.returncode == 0
 
 def installation_path(name: str) -> Result[str]:
@@ -101,7 +102,7 @@ def installation_path(name: str) -> Result[str]:
     install_confs = os.listdir(flatpak_install_dir)
     for config_file in install_confs:
         with open(flatpak_install_dir + config_file, mode='r') as file:
-            content = file.readline().split('\n')
+            content = file.read().split('\n')
             header = content[0]
             attributes = [line.split('=', 1) for line in content[1:] if '=' in line]
             attributes = dict(attributes)
@@ -110,20 +111,30 @@ def installation_path(name: str) -> Result[str]:
 
     return Err(f"Path of installation {name} was not found.")
 
-def downgrade_package(package: str, commit: str, installation: str, interactive: bool) -> Result[None]:
-    if not installation_exists(installation):
-        return Err(installation + " is not a valid flatpak installation, please set it up manually.")
-
+def pin_package_version(package: str, commit: str, installation: str, interactive: bool) -> Result[None]:
     # Require root privileges for security reasons
-    cmd = ["sudo" + "flatpak", "update", package, "--installation="+installation, "--commit="+commit]
+    cmd = ["sudo", "flatpak", "update", package, "--installation="+installation, "--commit="+commit]
     if not interactive:
         cmd.append("--noninteractive")
 
+    # Could also be an upgrade
     downgrade = subprocess.run(cmd, stderr=subprocess.PIPE) 
 
     if downgrade.returncode != 0:
        return Err(downgrade.stderr.decode('UTF-8')) 
     return Ok(None)
+
+def flatpak_update(package: str, installation: str, interactive: bool) -> Result[None]:
+    cmd = ["flatpak", "update", package, "--installation="+installation]
+    if not interactive:
+        cmd.append("--noninteractive")
+
+    update = subprocess.run(cmd, stderr=subprocess.PIPE) 
+
+    if update.returncode != 0:
+       return Err(update.stderr.decode('UTF-8')) 
+    return Ok(None)
+
 
 # TODO Get from url rather than remote name
 def get_build_repo(remote: str, package: str) -> Result[str]:
@@ -133,16 +144,18 @@ def get_build_repo(remote: str, package: str) -> Result[str]:
         case _:
             return Err("Only flathub is supported for now.")
 
-def rebuild(dir: str, remote: str, installation: str):
-    manifests = [file for file in os.listdir() if file == "manifest.json"]
-    if len(manifests) > 1:
-        return Err("Multiple manifests found, it's ambiguous.")
-    manifest = manifests[0]
-    cmd = ["flatpak-builder","--install-deps-from=" + remote, "--disable-cache", "--force-clean", "--installation="+installation, "build", manifest]
-    subprocess.run(cmd, cwd=dir)
+def rebuild(dir: str, installation: str) -> Result[None]:
+    manifest = find_manifest(os.listdir(dir))
+    if manifest is None:
+        return Err("Could not find manifest (none or too many of them are present)")
+    cmd = ["flatpak-builder", "--disable-cache", "--force-clean", "--installation="+installation, "build", manifest]
+    rebuild = subprocess.run(cmd, cwd=dir, stderr=subprocess.PIPE)
+    if rebuild.returncode != 0:
+       return Err(rebuild.stderr.decode('UTF-8')) 
+    return Ok(None)
 
 def install_deps(dir: str, remote: str, installation: str):
-    manifest = find_manifest(os.listdir())
+    manifest = find_manifest(os.listdir(dir))
     if manifest is None:
         return Err("Could not find manifest (none or too many of them are present)")
     cmd = ["flatpak-builder","--install-deps-from=" + remote, "--disable-cache", "--force-clean", "--installation="+installation, "build", manifest, "--install-deps-only"]
@@ -154,6 +167,12 @@ def find_manifest(files: list[str]) -> str | None:
         return None
     return manifests[0]
 
+def parse_manifest(manifest_content: str) -> Result[dict[str, str]]:
+    try:
+        return Ok(json.loads(manifest_content))
+    except:
+        return Err("Can't parse manifest file.")
+
 def main():
     args = parse_args()
     remote = args.remote
@@ -162,11 +181,16 @@ def main():
     interactive = args.interactive
     commit = args.commit
 
+    if not installation_exists(installation):
+        exit(1)
+
     flatpak_install(remote, package, installation, interactive).unwrap()
     if commit:
-        downgrade_package(package, commit, installation, interactive).unwrap()
+        pin_package_version(package, commit, installation, interactive).unwrap()
+    else:
+        flatpak_update(package, installation, interactive).unwrap()
 
-    metadatas = flatpak_info(remote, package).unwrap()
+    metadatas = flatpak_info(installation, package).unwrap()
     build_time = flatpak_date_to_datetime(metadatas['Date'])
     git_url = get_build_repo(remote, package).get_or_none()
 
@@ -181,18 +205,26 @@ def main():
         repo.submodule_update()
 
     install_path = installation_path(installation).unwrap()
-    manifest_path = f"{install_path}/app/{package}/current/{commit if commit else 'current'}/files/manifest.json"
+    manifest_path = f"{install_path}/app/{package}/current/{commit if commit else 'active'}/files/manifest.json"
+    with open(manifest_path, mode='r') as manifest:
+        manifest_content = manifest.read()
+        manifest = parse_manifest(manifest_content).unwrap()
 
-    shutil.copy(manifest_path, install_path)
+    shutil.copy(manifest_path, path)
 
+    # Change time of manifests files
     for root, _, files in os.walk(path):
         for file in files:
             # Try to only touch manifest files
             if file.endswith(".json") or file.endswith(".yml"):
                 os.utime(os.path.join(root, file), (build_time_float, build_time_float))
 
+    #for sdk_extension in manifest['sdk-extensions']
+    #    flatpak_install()
+
     install_deps(path, remote, installation)
-    rebuild(path, remote, installation)
+    pin_package_version(manifest['sdk']+"/x86_64/"+manifest['runtime-version'], manifest['sdk-commit'], installation, interactive).unwrap()
+    rebuild(path, installation).unwrap()
 
 
 if __name__ == '__main__':

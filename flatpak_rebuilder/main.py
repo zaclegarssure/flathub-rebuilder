@@ -148,7 +148,7 @@ def rebuild(dir: str, installation: str) -> Result[None]:
     manifest = find_manifest(os.listdir(dir))
     if manifest is None:
         return Err("Could not find manifest (none or too many of them are present)")
-    cmd = ["flatpak-builder", "--disable-cache", "--force-clean", "--installation="+installation, "build", manifest]
+    cmd = ["flatpak-builder", "--disable-cache", "--force-clean", "--installation="+installation, "build", manifest, "--repo=repo"]
     rebuild = subprocess.run(cmd, cwd=dir, stderr=subprocess.PIPE)
     if rebuild.returncode != 0:
        return Err(rebuild.stderr.decode('UTF-8')) 
@@ -224,6 +224,8 @@ def main():
 
     install_deps(path, remote, installation)
     pin_package_version(manifest['sdk']+"/x86_64/"+manifest['runtime-version'], manifest['sdk-commit'], installation, interactive).unwrap()
+    # A bit overkill but that ensures the manifests are the same
+    pin_package_version(manifest['runtime']+"/x86_64/"+manifest['runtime-version'], manifest['runtime-commit'], installation, interactive).unwrap()
     rebuild(path, installation).unwrap()
 
 

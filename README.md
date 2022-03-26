@@ -1,6 +1,8 @@
 
 <h1 align="center">
   <br>
+  <img src="https://github.com/HexHive/reprobuild-zacharie/blob/flatpak-rebuilder/Component%2013.png" alt="Flatpak-rebuilder" width="300">
+  <br>
   Flatpak Rebuilder
   <br>
 </h1>

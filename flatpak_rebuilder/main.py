@@ -10,6 +10,10 @@ import time
 import json
 from typing import Generic, TypeVar
 
+REMOTES_URLS_TO_LOCAL_DEPS = {
+    "https://dl.flathub.org/repo/": "https://github.com/flathub/"
+}
+
 # Not super useful since I unwrap every results, but I just wanted to play around with python's type annotations.
 T = TypeVar('T')
 class Ok(Generic[T]):
@@ -136,13 +140,15 @@ def flatpak_update(package: str, installation: str, interactive: bool) -> Result
     return Ok(None)
 
 
-# TODO Get from url rather than remote name
-def get_build_repo(remote: str, package: str) -> Result[str]:
-    match remote:
-        case "flathub":
-            return Ok("https://github.com/flathub/"+package) 
-        case _:
-            return Err("Only flathub is supported for now.")
+def get_additional_deps(remote: str, installation: str, package: str) -> Result[str]:
+    remote_url = flatpak_remote_url(remote, installation)
+    if remote_url.is_ok:
+        if remote_url.unwrap() in REMOTES_URLS_TO_LOCAL_DEPS:
+            git_url = REMOTES_URLS_TO_LOCAL_DEPS[remote_url.unwrap()]
+            return Ok(git_url + package)
+        else:
+            return Err("Unknown remote.")
+    return remote_url
 
 def rebuild(dir: str, installation: str) -> Result[None]:
     manifest = find_manifest(os.listdir(dir))
@@ -173,6 +179,29 @@ def parse_manifest(manifest_content: str) -> Result[dict[str, str]]:
     except:
         return Err("Can't parse manifest file.")
 
+def flatpak_package_path(installation: str, package: str, arch: str | None = None) -> Result[str]:
+    cmd = ["flatpak", "info", "-l", "--installation=" + installation, package]
+    if (arch):
+        cmd.append("--arch=" + arch)
+    flatpak_info = subprocess.run(cmd, capture_output=True)
+    if flatpak_info.returncode != 0:
+       return Err(rebuild.stderr.decode('UTF-8')) 
+    return Ok(flatpak_info.stdout.decode('UTF-8').strip())
+
+def flatpak_remote_url(remote: str, installation: str) -> Result[str]:
+    cmd = ["flatpak", "remotes", "--installation=" + installation, "--columns=name,url"]
+    flatpak_remotes = subprocess.run(cmd, capture_output=True)
+    if flatpak_remotes.returncode != 0:
+       return Err(flatpak_remotes.stderr.decode('UTF-8')) 
+    output = flatpak_remotes.stdout.decode('UTF-8').strip().split('\n')
+    if (len(output) >= 1):
+        remote_url = [line.split()[1] for line in output if line.split()[0] == remote]
+        if (len(remote_url) == 1):
+            return Ok(remote_url[0])
+    return Err("Remote url not found.")
+    
+
+
 def main():
     args = parse_args()
     remote = args.remote
@@ -180,6 +209,8 @@ def main():
     installation = args.installation
     interactive = args.interactive
     commit = args.commit
+
+    git_url = get_additional_deps(remote, installation, package).get_or_none()
 
     if not installation_exists(installation):
         exit(1)
@@ -192,7 +223,6 @@ def main():
 
     metadatas = flatpak_info(installation, package).unwrap()
     build_time = flatpak_date_to_datetime(metadatas['Date'])
-    git_url = get_build_repo(remote, package).get_or_none()
 
     build_time_float = time.mktime(build_time.timetuple())
 
@@ -204,8 +234,8 @@ def main():
         repo = Repo.clone_from(git_url,path)
         repo.submodule_update()
 
-    install_path = installation_path(installation).unwrap()
-    manifest_path = f"{install_path}/app/{package}/current/{commit if commit else 'active'}/files/manifest.json"
+    #install_path = installation_path(installation).unwrap()
+    manifest_path = flatpak_package_path(installation, package).unwrap() + "/files/manifest.json"
     with open(manifest_path, mode='r') as manifest:
         manifest_content = manifest.read()
         manifest = parse_manifest(manifest_content).unwrap()

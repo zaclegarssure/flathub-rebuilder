@@ -81,7 +81,7 @@ Be aware that this requires root privileges at certain moment in order to downgr
 
 This roadmap is more for me to not forget what I should do and fix.
 
-- [ ] Use the absolute name of the remote, rather than the local one
+- [x] Use the absolute name of the remote, rather than the local one
 - [ ] Add step to generate comparable artifacts
 - [ ] Add comparison of these artifacts with diffoscope support
 - [ ] See if sdk-extensions versions may change the output.

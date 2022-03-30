@@ -91,11 +91,8 @@ def flatpak_install(remote: str, package: str, installation: str, interractive: 
             return Err(install.stderr.decode('UTF-8'))
 
 def flatpak_date_to_datetime(date: str) -> datetime:
-    split = date.split('+')
-    time = split[0]
-    time_zone = split[1]
-    time_zone = '+' + time_zone[:2] + ':' + time_zone[2:]
-    return datetime.fromisoformat(time + time_zone)
+    format = '%Y-%m-%d %H:%M:%S %z'
+    return datetime.strptime(date, format)
 
 def installation_exists(name: str) -> bool:
     result = subprocess.run(["flatpak", "--installation="+name,"list"], capture_output=True) 
@@ -223,8 +220,8 @@ def main():
 
     metadatas = flatpak_info(installation, package).unwrap()
     build_time = flatpak_date_to_datetime(metadatas['Date'])
+    build_time_float = build_time.timestamp()
 
-    build_time_float = time.mktime(build_time.timetuple())
 
     # Init the build directory
     dir = package

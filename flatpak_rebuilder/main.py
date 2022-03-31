@@ -7,6 +7,7 @@ import re
 import shutil
 from git.repo import Repo
 from datetime import datetime
+from datetime import timezone
 import json
 from typing import Generic, TypeVar
 
@@ -214,6 +215,7 @@ def find_time_in_binary(path: str) -> list[datetime]:
         if match:
             date = match.group()
             date = datetime.strptime(date, "%b %d %Y %H:%M:%S")
+            date = date.replace(tzinfo=timezone.utc)
             dates.append(date)
 
     return dates

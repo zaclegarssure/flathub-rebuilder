@@ -3,10 +3,10 @@ from argparse import Namespace
 
 import subprocess
 import os
+import re
 import shutil
 from git.repo import Repo
 from datetime import datetime
-import time
 import json
 from typing import Generic, TypeVar
 
@@ -63,6 +63,7 @@ def parse_args() -> Namespace:
         action='store_true'
     )
     parser.add_argument('-c', '--commit',help="Commit number of the package to rebuild.")
+    parser.add_argument('-t', '--time', help="Time to use for the rebuild.")
 
     return parser.parse_args()
 
@@ -147,11 +148,14 @@ def get_additional_deps(remote: str, installation: str, package: str) -> Result[
             return Err("Unknown remote.")
     return remote_url
 
-def rebuild(dir: str, installation: str) -> Result[None]:
+def rebuild(dir: str, installation: str, install: bool = False) -> Result[None]:
     manifest = find_manifest(os.listdir(dir))
     if manifest is None:
         return Err("Could not find manifest (none or too many of them are present)")
     cmd = ["flatpak-builder", "--disable-cache", "--force-clean", "--installation="+installation, "build", manifest, "--repo=repo"]
+    if install:
+        cmd.insert(0, "sudo")
+        cmd.append("--install")
     rebuild = subprocess.run(cmd, cwd=dir, stderr=subprocess.PIPE)
     if rebuild.returncode != 0:
        return Err(rebuild.stderr.decode('UTF-8')) 
@@ -196,7 +200,34 @@ def flatpak_remote_url(remote: str, installation: str) -> Result[str]:
         if (len(remote_url) == 1):
             return Ok(remote_url[0])
     return Err("Remote url not found.")
-    
+
+def find_time_in_binary(path: str) -> list[datetime]:
+    cmd = ["strings", path]
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        return []
+    output = result.stdout.decode('UTF-8').splitlines()
+    fulldate_pattern = re.compile(r"\w{3} \d\d \d{4} \d\d:\d\d:\d\d")
+    dates: list[datetime] = []
+    for str in output:
+        match = fulldate_pattern.search(str)
+        if match:
+            date = match.group()
+            date = datetime.strptime(date, "%b %d %Y %H:%M:%S")
+            dates.append(date)
+
+    return dates
+
+def find_closest_time(flatpak_package_path: str, estimate: datetime) -> datetime:
+    times: list[datetime] = []
+    for root, _, files in os.walk(flatpak_package_path + "/files/"):
+       for file in files:
+          times.extend(find_time_in_binary(os.path.join(root, file)))
+
+    if len(times) > 0:
+        return times[min(range(len(times)), key=lambda t: (estimate - times[t]))]
+
+    return estimate
 
 
 def main():
@@ -206,6 +237,7 @@ def main():
     installation = args.installation
     interactive = args.interactive
     commit = args.commit
+    time = args.time
 
     git_url = get_additional_deps(remote, installation, package).get_or_none()
 
@@ -219,9 +251,8 @@ def main():
         flatpak_update(package, installation, interactive).unwrap()
 
     metadatas = flatpak_info(installation, package).unwrap()
-    build_time = flatpak_date_to_datetime(metadatas['Date'])
-    build_time_float = build_time.timestamp()
 
+    original_path = flatpak_package_path(installation, package).unwrap()
 
     # Init the build directory
     dir = package
@@ -231,8 +262,18 @@ def main():
         repo = Repo.clone_from(git_url,path)
         repo.submodule_update()
 
+    if time:
+        build_time = flatpak_date_to_datetime(time)
+    else:
+        build_time_estimate = flatpak_date_to_datetime(metadatas['Date'])
+        build_time = find_closest_time(original_path, build_time_estimate)
+    build_timestamp = build_time.timestamp()
+
+    print(build_time)
+    return
+
     #install_path = installation_path(installation).unwrap()
-    manifest_path = flatpak_package_path(installation, package).unwrap() + "/files/manifest.json"
+    manifest_path = original_path + "/files/manifest.json"
     with open(manifest_path, mode='r') as manifest:
         manifest_content = manifest.read()
         manifest = parse_manifest(manifest_content).unwrap()
@@ -244,16 +285,16 @@ def main():
         for file in files:
             # Try to only touch manifest files
             if file.endswith(".json") or file.endswith(".yml"):
-                os.utime(os.path.join(root, file), (build_time_float, build_time_float))
+                os.utime(os.path.join(root, file), (build_timestamp, build_timestamp))
 
     #for sdk_extension in manifest['sdk-extensions']
     #    flatpak_install()
 
     install_deps(path, remote, installation)
     pin_package_version(manifest['sdk']+"/x86_64/"+manifest['runtime-version'], manifest['sdk-commit'], installation, interactive).unwrap()
-    # A bit overkill but that ensures the manifests are the same
+    # A bit overkill but that ensures the everything is the same
     pin_package_version(manifest['runtime']+"/x86_64/"+manifest['runtime-version'], manifest['runtime-commit'], installation, interactive).unwrap()
-    rebuild(path, installation).unwrap()
+    rebuild(path, installation, True).unwrap()
 
 
 if __name__ == '__main__':

@@ -225,7 +225,7 @@ def find_closest_time(flatpak_package_path: str, estimate: datetime) -> datetime
           times.extend(find_time_in_binary(os.path.join(root, file)))
 
     if len(times) > 0:
-        return times[min(range(len(times)), key=lambda t: (estimate - times[t]))]
+        return times[min(range(len(times)), key=lambda t: abs(estimate.timestamp() - times[t].timestamp()))]
 
     return estimate
 
@@ -268,9 +268,6 @@ def main():
         build_time_estimate = flatpak_date_to_datetime(metadatas['Date'])
         build_time = find_closest_time(original_path, build_time_estimate)
     build_timestamp = build_time.timestamp()
-
-    print(build_time)
-    return
 
     #install_path = installation_path(installation).unwrap()
     manifest_path = original_path + "/files/manifest.json"

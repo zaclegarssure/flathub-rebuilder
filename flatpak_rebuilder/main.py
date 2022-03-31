@@ -153,7 +153,7 @@ def rebuild(dir: str, installation: str, install: bool = False) -> Result[None]:
     manifest = find_manifest(os.listdir(dir))
     if manifest is None:
         return Err("Could not find manifest (none or too many of them are present)")
-    cmd = ["flatpak-builder", "--disable-cache", "--force-clean", "--installation="+installation, "build", manifest, "--repo=repo"]
+    cmd = ["flatpak-builder", "--disable-cache", "--force-clean", "--installation="+installation, "build", manifest, "--repo=repo", "--bundle-sources"]
     if install:
         cmd.insert(0, "sudo")
         cmd.append("--install")

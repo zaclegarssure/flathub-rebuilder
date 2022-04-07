@@ -55,8 +55,8 @@ def parse_args() -> Namespace:
     parser.add_argument(
         '-i',
         '--installation',
-        help="Specifies the local installation to use, by default it will use the global flatpak install."
-        ,default="default"
+        help="Specifies the local installation to use, by default it will use the user flatpak install."
+        ,default="user"
     )
     parser.add_argument(
         '-int','--interactive',
@@ -69,7 +69,13 @@ def parse_args() -> Namespace:
     return parser.parse_args()
 
 def flatpak_info(installation: str, package: str) -> Result[dict[str, str]]:
-    result = subprocess.run(["flatpak", "info", "--installation=" + installation, package], capture_output=True) 
+
+    cmd = ["flatpak", "info", package]
+    if installation == "user":
+        cmd.append("--user")
+    else:
+        cmd.append("--installation=" + installation)
+    result = subprocess.run(cmd, capture_output=True) 
     if result.returncode == 0:
         output = result.stdout.decode('UTF-8')
         return Ok(cmd_output_to_dict(output))
@@ -82,7 +88,11 @@ def cmd_output_to_dict(output: str) -> dict[str, str]:
     return resultDict
 
 def flatpak_install(remote: str, package: str, installation: str, interractive: bool) -> Result[None]:
-    cmd = ["flatpak", "install", remote, package, "--installation=" + installation]
+    cmd = ["flatpak", "install", remote, package]
+    if installation == "user":
+        cmd.append("--user")
+    else:
+        cmd.append("--installation=" + installation)
     if not interractive:
         cmd.append("--noninteractive")
     install = subprocess.run(cmd, stderr=subprocess.PIPE)
@@ -97,10 +107,14 @@ def flatpak_date_to_datetime(date: str) -> datetime:
     return datetime.strptime(date, format)
 
 def installation_exists(name: str) -> bool:
+    if name == "user":
+        return True
     result = subprocess.run(["flatpak", "--installation="+name,"list"], capture_output=True) 
     return result.returncode == 0
 
 def installation_path(name: str) -> Result[str]:
+    if name == "user":
+        return Ok(os.path.expanduser('~') + "/.local/share/flatpak/")
     flatpak_install_dir = "/etc/flatpak/installations.d/"
     install_confs = os.listdir(flatpak_install_dir)
     for config_file in install_confs:
@@ -115,10 +129,17 @@ def installation_path(name: str) -> Result[str]:
     return Err(f"Path of installation {name} was not found.")
 
 def pin_package_version(package: str, commit: str, installation: str, interactive: bool) -> Result[None]:
-    # Require root privileges for security reasons
-    cmd = ["sudo", "flatpak", "update", package, "--installation="+installation, "--commit="+commit]
+    cmd = ["flatpak", "update", package, "--commit="+commit]
+    if installation == "user":
+        cmd.append("--user")
+    else:
+        cmd.append("--installation=" + installation)
     if not interactive:
         cmd.append("--noninteractive")
+
+    # Require root privileges for security reasons
+    if installation != "user":
+        cmd.insert(0, "sudo")
 
     # Could also be an upgrade
     downgrade = subprocess.run(cmd, stderr=subprocess.PIPE) 
@@ -128,7 +149,11 @@ def pin_package_version(package: str, commit: str, installation: str, interactiv
     return Ok(None)
 
 def flatpak_update(package: str, installation: str, interactive: bool) -> Result[None]:
-    cmd = ["flatpak", "update", package, "--installation="+installation]
+    cmd = ["flatpak", "update", package]
+    if installation == "user":
+        cmd.append("--user")
+    else:
+        cmd.append("--installation="+installation)
     if not interactive:
         cmd.append("--noninteractive")
 
@@ -149,13 +174,20 @@ def get_additional_deps(remote: str, installation: str, package: str) -> Result[
             return Err("Unknown remote.")
     return remote_url
 
-def rebuild(dir: str, installation: str, install: bool = False) -> Result[None]:
-    manifest = find_manifest(os.listdir(dir))
+def rebuild(dir: str, installation: str, package: str, install: bool = False) -> Result[None]:
+    manifest = find_build_manifest(os.listdir(dir), package)
     if manifest is None:
-        return Err("Could not find manifest (none or too many of them are present)")
-    cmd = ["flatpak-builder", "--disable-cache", "--force-clean", "--installation="+installation, "build", manifest, "--repo=repo", "--bundle-sources"]
+        manifest = find_manifest(os.listdir(dir))
+        if manifest is None:
+            return Err("Could not find manifest (none or too many of them are present)")
+    cmd = ["flatpak-builder", "--disable-cache", "--force-clean", "build", manifest, "--repo=repo", "--bundle-sources"]
+    if installation == "user":
+        cmd.append("--user")
+    else:
+        cmd.append("--installation=" + installation)
     if install:
-        cmd.insert(0, "sudo")
+        if installation != "user":
+            cmd.insert(0, "sudo")
         cmd.append("--install")
     rebuild = subprocess.run(cmd, cwd=dir, stderr=subprocess.PIPE)
     if rebuild.returncode != 0:
@@ -166,7 +198,11 @@ def install_deps(dir: str, remote: str, installation: str):
     manifest = find_manifest(os.listdir(dir))
     if manifest is None:
         return Err("Could not find manifest (none or too many of them are present)")
-    cmd = ["flatpak-builder","--install-deps-from=" + remote, "--disable-cache", "--force-clean", "--installation="+installation, "build", manifest, "--install-deps-only"]
+    cmd = ["flatpak-builder","--install-deps-from=" + remote, "--disable-cache", "--force-clean", "build", manifest, "--install-deps-only"]
+    if installation == "user":
+        cmd.append("--user")
+    else:
+        cmd.append("--installation=" + installation)
     subprocess.run(cmd, cwd=dir)
 
 def find_manifest(files: list[str]) -> str | None:
@@ -175,6 +211,14 @@ def find_manifest(files: list[str]) -> str | None:
         return None
     return manifests[0]
 
+# Hope I could avoid that
+def find_build_manifest(files: list[str], package: str) -> str | None:
+    manifests = [file for file in files if file == package + ".json" or file == package + ".yml" or file == package + ".yaml"]
+    if len(manifests) > 1:
+        return None
+    return manifests[0]
+    
+
 def parse_manifest(manifest_content: str) -> Result[dict[str, str]]:
     try:
         return Ok(json.loads(manifest_content))
@@ -182,16 +226,24 @@ def parse_manifest(manifest_content: str) -> Result[dict[str, str]]:
         return Err("Can't parse manifest file.")
 
 def flatpak_package_path(installation: str, package: str, arch: str | None = None) -> Result[str]:
-    cmd = ["flatpak", "info", "-l", "--installation=" + installation, package]
+    cmd = ["flatpak", "info", "-l", package]
     if (arch):
         cmd.append("--arch=" + arch)
+    if installation == "user":
+        cmd.append("--user")
+    else:
+        cmd.append("--installation=" + installation)
     flatpak_info = subprocess.run(cmd, capture_output=True)
     if flatpak_info.returncode != 0:
        return Err(rebuild.stderr.decode('UTF-8')) 
     return Ok(flatpak_info.stdout.decode('UTF-8').strip())
 
 def flatpak_remote_url(remote: str, installation: str) -> Result[str]:
-    cmd = ["flatpak", "remotes", "--installation=" + installation, "--columns=name,url"]
+    cmd = ["flatpak", "remotes", "--columns=name,url"]
+    if installation == "user":
+        cmd.append("--user")
+    else:
+        cmd.append("--installation=" + installation)
     flatpak_remotes = subprocess.run(cmd, capture_output=True)
     if flatpak_remotes.returncode != 0:
        return Err(flatpak_remotes.stderr.decode('UTF-8')) 
@@ -293,7 +345,7 @@ def main():
     pin_package_version(manifest['sdk']+"/x86_64/"+manifest['runtime-version'], manifest['sdk-commit'], installation, interactive).unwrap()
     # A bit overkill but that ensures the everything is the same
     pin_package_version(manifest['runtime']+"/x86_64/"+manifest['runtime-version'], manifest['runtime-commit'], installation, interactive).unwrap()
-    rebuild(path, installation, True).unwrap()
+    rebuild(path, installation, package, True).unwrap()
 
 
 if __name__ == '__main__':

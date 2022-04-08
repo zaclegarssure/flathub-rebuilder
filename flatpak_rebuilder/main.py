@@ -9,40 +9,35 @@ from git.repo import Repo
 from datetime import datetime
 from datetime import timezone
 import json
-from typing import Generic, TypeVar
 
 REMOTES_URLS_TO_LOCAL_DEPS = {
     "https://dl.flathub.org/repo/": "https://github.com/flathub/"
 }
 
-# Not super useful since I unwrap every results, but I just wanted to play around with python's type annotations.
-T = TypeVar('T')
-class Ok(Generic[T]):
-    def __init__(self, value: T) -> None:
-        super().__init__()
-        self.value = value
-    def is_ok(self) -> bool:
-        return True
-    def is_err(self) -> bool:
-        return False 
-    def unwrap(self) -> T:
-        return self.value
-    def get_or_none(self) -> T | None:
-        return self.value
+def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False, capture_output = False, cwd: str | None = None) -> str:
+    if may_need_root and installation != "user":
+        cmd.insert(0, "sudo")
 
-class Err(Generic[T]):
-    def __init__(self, reason: str) -> None:
-        self.reason =  reason
-    def is_ok(self) -> bool:
-        return False 
-    def is_err(self) -> bool:
-        return True
-    def unwrap(self) -> T:
-        raise Exception("Tried to unwrap an Err, which had the following error: " + self.reason)
-    def get_or_none(self) -> T | None:
-        return None
+    match installation:
+        case "user":
+            cmd.append("--user")
+        case "system":
+            cmd.append("--system")
+        case _:
+            cmd.append("--installation="+installation)
 
-Result = Ok[T] | Err[T]
+    if capture_output:
+        result = subprocess.run(cmd, capture_output=True, cwd=cwd)
+    else:
+        result = subprocess.run(cmd, stderr=subprocess.PIPE, cwd=cwd)
+
+    if result.returncode != 0:
+        raise Exception(result.stderr.decode('UTF-8')) 
+    else:
+        if capture_output:
+            return result.stdout.decode('UTF-8')
+        else:
+            return ""
 
 
 def parse_args() -> Namespace:
@@ -53,68 +48,61 @@ def parse_args() -> Namespace:
     parser.add_argument('remote', help="The name of the remote repository, i.e. flathub")
     parser.add_argument('flatpak_name', help="The name of the flatpak to reproduce")
     parser.add_argument(
-        '-i',
-        '--installation',
-        help="Specifies the local installation to use, by default it will use the user flatpak install."
-        ,default="user"
-    )
-    parser.add_argument(
         '-int','--interactive',
         help="If set, flatpaks install and build command will run in interactive mode, asking you for input.",
         action='store_true'
     )
     parser.add_argument('-c', '--commit',help="Commit number of the package to rebuild.")
     parser.add_argument('-t', '--time', help="Time to use for the rebuild.")
+    install_group = parser.add_mutually_exclusive_group()
+    install_group.add_argument(
+        '-i',
+        '--installation',
+        help="Specifies the local installation to use, by default it will use the user flatpak install."
+    )
+    install_group.add_argument(
+        '--user',
+        help="If sets, use user install.",
+        action='store_true'
+    )
+    install_group.add_argument(
+        '--system',
+        help="If sets, use system install.",
+        action='store_true'
+    )
 
     return parser.parse_args()
 
-def flatpak_info(installation: str, package: str) -> Result[dict[str, str]]:
-
+def flatpak_info(installation: str, package: str) -> dict[str, str]:
     cmd = ["flatpak", "info", package]
-    if installation == "user":
-        cmd.append("--user")
-    else:
-        cmd.append("--installation=" + installation)
-    result = subprocess.run(cmd, capture_output=True) 
-    if result.returncode == 0:
-        output = result.stdout.decode('UTF-8')
-        return Ok(cmd_output_to_dict(output))
-    return Err(result.stderr.decode('UTF-8'))
-
+    output = run_flatpak_command(cmd, installation, capture_output=True)
+    return cmd_output_to_dict(output)
 
 def cmd_output_to_dict(output: str) -> dict[str, str]:
     result = [map(str.strip, line.split(':', 1)) for line in output.split('\n') if ':' in line]
     resultDict: dict[str, str] = dict(result)
     return resultDict
 
-def flatpak_install(remote: str, package: str, installation: str, interractive: bool) -> Result[None]:
+def flatpak_install(remote: str, package: str, installation: str, interractive: bool):
     cmd = ["flatpak", "install", remote, package]
-    if installation == "user":
-        cmd.append("--user")
-    else:
-        cmd.append("--installation=" + installation)
     if not interractive:
         cmd.append("--noninteractive")
-    install = subprocess.run(cmd, stderr=subprocess.PIPE)
-    match install.returncode:
-        case 0:
-            return Ok(None)
-        case _:
-            return Err(install.stderr.decode('UTF-8'))
+    run_flatpak_command(cmd, installation)
 
 def flatpak_date_to_datetime(date: str) -> datetime:
     format = '%Y-%m-%d %H:%M:%S %z'
     return datetime.strptime(date, format)
 
 def installation_exists(name: str) -> bool:
-    if name == "user":
-        return True
-    result = subprocess.run(["flatpak", "--installation="+name,"list"], capture_output=True) 
+    result = subprocess.run(["flatpak", "--installation="+name, "list"], capture_output=True) 
     return result.returncode == 0
 
-def installation_path(name: str) -> Result[str]:
+def installation_path(name: str) -> str:
     if name == "user":
-        return Ok(os.path.expanduser('~') + "/.local/share/flatpak/")
+        return os.path.expanduser('~') + "/.local/share/flatpak/"
+    elif name == "system":
+        return "/var/lib/flatpak/"
+
     flatpak_install_dir = "/etc/flatpak/installations.d/"
     install_confs = os.listdir(flatpak_install_dir)
     for config_file in install_confs:
@@ -124,86 +112,51 @@ def installation_path(name: str) -> Result[str]:
             attributes = [line.split('=', 1) for line in content[1:] if '=' in line]
             attributes = dict(attributes)
             if name in header:
-                return Ok(attributes['Path'])
+                return attributes['Path']
 
-    return Err(f"Path of installation {name} was not found.")
+    raise Exception(f"Path of installation {name} was not found.")
 
-def pin_package_version(package: str, commit: str, installation: str, interactive: bool) -> Result[None]:
+def pin_package_version(package: str, commit: str, installation: str, interactive: bool):
     cmd = ["flatpak", "update", package, "--commit="+commit]
-    if installation == "user":
-        cmd.append("--user")
-    else:
-        cmd.append("--installation=" + installation)
     if not interactive:
         cmd.append("--noninteractive")
 
-    # Require root privileges for security reasons
-    if installation != "user":
-        cmd.insert(0, "sudo")
+    run_flatpak_command(cmd, installation, may_need_root=True)
 
-    # Could also be an upgrade
-    downgrade = subprocess.run(cmd, stderr=subprocess.PIPE) 
-
-    if downgrade.returncode != 0:
-       return Err(downgrade.stderr.decode('UTF-8')) 
-    return Ok(None)
-
-def flatpak_update(package: str, installation: str, interactive: bool) -> Result[None]:
+def flatpak_update(package: str, installation: str, interactive: bool):
     cmd = ["flatpak", "update", package]
-    if installation == "user":
-        cmd.append("--user")
-    else:
-        cmd.append("--installation="+installation)
     if not interactive:
         cmd.append("--noninteractive")
 
-    update = subprocess.run(cmd, stderr=subprocess.PIPE) 
+    run_flatpak_command(cmd, installation, may_need_root=True)
 
-    if update.returncode != 0:
-       return Err(update.stderr.decode('UTF-8')) 
-    return Ok(None)
-
-
-def get_additional_deps(remote: str, installation: str, package: str) -> Result[str]:
+def get_additional_deps(remote: str, installation: str, package: str) -> str | None:
     remote_url = flatpak_remote_url(remote, installation)
-    if remote_url.is_ok:
-        if remote_url.unwrap() in REMOTES_URLS_TO_LOCAL_DEPS:
-            git_url = REMOTES_URLS_TO_LOCAL_DEPS[remote_url.unwrap()]
-            return Ok(git_url + package)
-        else:
-            return Err("Unknown remote.")
-    return remote_url
+    if remote_url in REMOTES_URLS_TO_LOCAL_DEPS:
+        git_url = REMOTES_URLS_TO_LOCAL_DEPS[remote_url]
+        return git_url + package
+    else:
+        return None
 
-def rebuild(dir: str, installation: str, package: str, install: bool = False) -> Result[None]:
+def rebuild(dir: str, installation: str, package: str, install: bool = False):
     manifest = find_build_manifest(os.listdir(dir), package)
     if manifest is None:
         manifest = find_manifest(os.listdir(dir))
         if manifest is None:
-            return Err("Could not find manifest (none or too many of them are present)")
+            raise Exception("Could not find manifest (none or too many of them are present)")
+
     cmd = ["flatpak-builder", "--disable-cache", "--force-clean", "build", manifest, "--repo=repo", "--bundle-sources"]
-    if installation == "user":
-        cmd.append("--user")
-    else:
-        cmd.append("--installation=" + installation)
     if install:
-        if installation != "user":
-            cmd.insert(0, "sudo")
         cmd.append("--install")
-    rebuild = subprocess.run(cmd, cwd=dir, stderr=subprocess.PIPE)
-    if rebuild.returncode != 0:
-       return Err(rebuild.stderr.decode('UTF-8')) 
-    return Ok(None)
+
+    run_flatpak_command(cmd, installation, may_need_root=install, cwd=dir)
 
 def install_deps(dir: str, remote: str, installation: str):
     manifest = find_manifest(os.listdir(dir))
     if manifest is None:
-        return Err("Could not find manifest (none or too many of them are present)")
+        raise Exception("Could not find manifest (none or too many of them are present)")
     cmd = ["flatpak-builder","--install-deps-from=" + remote, "--disable-cache", "--force-clean", "build", manifest, "--install-deps-only"]
-    if installation == "user":
-        cmd.append("--user")
-    else:
-        cmd.append("--installation=" + installation)
-    subprocess.run(cmd, cwd=dir)
+    run_flatpak_command(cmd, installation, cwd=dir)
 
 def find_manifest(files: list[str]) -> str | None:
     manifests = [file for file in files if file == "manifest.json"]
@@ -217,42 +170,29 @@ def find_build_manifest(files: list[str], package: str) -> str | None:
     if len(manifests) > 1:
         return None
     return manifests[0]
-    
 
-def parse_manifest(manifest_content: str) -> Result[dict[str, str]]:
-    try:
-        return Ok(json.loads(manifest_content))
-    except:
-        return Err("Can't parse manifest file.")
+def parse_manifest(manifest_content: str) -> dict[str, str]:
+    return json.loads(manifest_content)
 
-def flatpak_package_path(installation: str, package: str, arch: str | None = None) -> Result[str]:
+def flatpak_package_path(installation: str, package: str, arch: str | None = None) -> str:
     cmd = ["flatpak", "info", "-l", package]
     if (arch):
         cmd.append("--arch=" + arch)
-    if installation == "user":
-        cmd.append("--user")
-    else:
-        cmd.append("--installation=" + installation)
-    flatpak_info = subprocess.run(cmd, capture_output=True)
-    if flatpak_info.returncode != 0:
-       return Err(rebuild.stderr.decode('UTF-8')) 
-    return Ok(flatpak_info.stdout.decode('UTF-8').strip())
+    flatpak_info = run_flatpak_command(cmd, installation, capture_output=True)
+    return flatpak_info.strip()
 
-def flatpak_remote_url(remote: str, installation: str) -> Result[str]:
+def flatpak_remote_url(remote: str, installation: str) -> str:
     cmd = ["flatpak", "remotes", "--columns=name,url"]
-    if installation == "user":
-        cmd.append("--user")
-    else:
-        cmd.append("--installation=" + installation)
-    flatpak_remotes = subprocess.run(cmd, capture_output=True)
-    if flatpak_remotes.returncode != 0:
-       return Err(flatpak_remotes.stderr.decode('UTF-8')) 
-    output = flatpak_remotes.stdout.decode('UTF-8').strip().split('\n')
+    flatpak_remotes = run_flatpak_command(cmd, installation, capture_output=True)
+    if flatpak_remotes.isspace():
+        raise Exception(f"No remotes in installation {installation}.")
+    output = flatpak_remotes.strip().split('\n')
     if (len(output) >= 1):
         remote_url = [line.split()[1] for line in output if line.split()[0] == remote]
         if (len(remote_url) == 1):
-            return Ok(remote_url[0])
-    return Err("Remote url not found.")
+            return remote_url[0]
+
+    raise Exception("Remote not found.")
 
 def find_time_in_binary(path: str) -> list[datetime]:
     cmd = ["strings", path]
@@ -288,25 +228,36 @@ def main():
     args = parse_args()
     remote = args.remote
     package = args.flatpak_name
-    installation = args.installation
+    user_install = args.user
+    system_install = args.system
+    custom_installation = args.installation
     interactive = args.interactive
     commit = args.commit
     time = args.time
 
-    git_url = get_additional_deps(remote, installation, package).get_or_none()
-
-    if not installation_exists(installation):
-        exit(1)
-
-    flatpak_install(remote, package, installation, interactive).unwrap()
-    if commit:
-        pin_package_version(package, commit, installation, interactive).unwrap()
+    if user_install:
+        installation = "user"
+    elif system_install:
+        installation = "system"
+    elif custom_installation:
+        installation = custom_installation
+        if not installation_exists(installation):
+            raise Exception(f"Installation {installation} does not exist.")
     else:
-        flatpak_update(package, installation, interactive).unwrap()
+        installation = "user"
 
-    metadatas = flatpak_info(installation, package).unwrap()
+    git_url = get_additional_deps(remote, installation, package)
 
-    original_path = flatpak_package_path(installation, package).unwrap()
+    flatpak_install(remote, package, installation, interactive)
+
+    if commit:
+        pin_package_version(package, commit, installation, interactive)
+    else:
+        flatpak_update(package, installation, interactive)
+
+    metadatas = flatpak_info(installation, package)
+
+    original_path = flatpak_package_path(installation, package)
 
     # Init the build directory
     dir = package
@@ -327,7 +278,7 @@ def main():
     manifest_path = original_path + "/files/manifest.json"
     with open(manifest_path, mode='r') as manifest:
         manifest_content = manifest.read()
-        manifest = parse_manifest(manifest_content).unwrap()
+        manifest = parse_manifest(manifest_content)
 
     shutil.copy(manifest_path, path)
 
@@ -342,10 +293,10 @@ def main():
     #    flatpak_install()
 
     install_deps(path, remote, installation)
-    pin_package_version(manifest['sdk']+"/x86_64/"+manifest['runtime-version'], manifest['sdk-commit'], installation, interactive).unwrap()
+    pin_package_version(manifest['sdk']+"/x86_64/"+manifest['runtime-version'], manifest['sdk-commit'], installation, interactive)
     # A bit overkill but that ensures the everything is the same
-    pin_package_version(manifest['runtime']+"/x86_64/"+manifest['runtime-version'], manifest['runtime-commit'], installation, interactive).unwrap()
-    rebuild(path, installation, package, True).unwrap()
+    pin_package_version(manifest['runtime']+"/x86_64/"+manifest['runtime-version'], manifest['runtime-commit'], installation, interactive)
+    rebuild(path, installation, package, install=True)
 
 
 if __name__ == '__main__':

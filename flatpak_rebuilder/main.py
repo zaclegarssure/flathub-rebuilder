@@ -14,7 +14,7 @@ REMOTES_URLS_TO_LOCAL_DEPS = {
     "https://dl.flathub.org/repo/": "https://github.com/flathub/"
 }
 
-def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False, capture_output = False, cwd: str | None = None) -> str:
+def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False, capture_output = False, cwd: str | None = None, interactive = True) -> str:
     if may_need_root and installation != "user":
         cmd.insert(0, "sudo")
 
@@ -25,6 +25,9 @@ def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False
             cmd.append("--system")
         case _:
             cmd.append("--installation="+installation)
+
+    if not interactive:
+        cmd.append("--noninteractive")
 
     if capture_output:
         result = subprocess.run(cmd, capture_output=True, cwd=cwd)
@@ -236,6 +239,24 @@ def find_closest_time(flatpak_package_path: str, estimate: datetime) -> datetime
 
     return estimate
 
+def ostree_checkout(repo: str, ref: str, dest: str, root = False):
+    cmd = ["ostree", "checkout", ref, dest, "--repo="+repo]
+    if root:
+        cmd.insert(0, "sudo")
+
+    subprocess.run(cmd).check_returncode()
+
+def run_diffoscope(original_path: str, rebuild_path: str, html_output: str | None = None) -> int:
+    cmd = ["diffoscope", original_path, rebuild_path, "--exclude-directory-metadata=yes"]
+    if html_output:
+        cmd.append("--html="+html_output)
+
+    return subprocess.run(cmd).returncode
+
+def flatpak_uninstall(package: str, installation: str, interactive: bool):
+    cmd = ["flatpak", "uninstall", package]
+    run_flatpak_command(cmd, installation, interactive=interactive)
+
 
 def main():
     args = parse_args()
@@ -290,7 +311,6 @@ def main():
 
     builder_commit = find_flatpak_builder_commit_for_date(remote, installation, build_time)
 
-    #install_path = installation_path(installation).unwrap()
     manifest_path = original_path + "/files/manifest.json"
     with open(manifest_path, mode='r') as manifest:
         manifest_content = manifest.read()
@@ -305,8 +325,14 @@ def main():
             if file.endswith(".json") or file.endswith(".yml"):
                 os.utime(os.path.join(root, file), (build_timestamp, build_timestamp))
 
+    original_artifact = package+".original"
+    rebuild_artifact = package+".rebuild"
+    report = package+".report.html"
+
     #for sdk_extension in manifest['sdk-extensions']
     #    flatpak_install()
+    install_path = installation_path(installation)
+    ostree_checkout(install_path + "/repo", metadatas['Ref'], original_artifact, root=(installation != "user"))
 
     install_deps(path, remote, installation)
     pin_package_version(manifest['sdk']+"/x86_64/"+manifest['runtime-version'], manifest['sdk-commit'], installation, interactive)
@@ -314,6 +340,20 @@ def main():
     pin_package_version(manifest['runtime']+"/x86_64/"+manifest['runtime-version'], manifest['runtime-commit'], installation, interactive)
     pin_package_version("org.flatpak.Builder", builder_commit, installation, interactive)
     rebuild(path, installation, package, metadatas['Branch'], install=True)
+
+    ostree_checkout(install_path + "/repo", metadatas['Ref'], rebuild_artifact, root=(installation != "user"))
+
+    # Clean up
+    flatpak_uninstall(package, installation, interactive)
+
+    result = run_diffoscope(original_artifact, rebuild_artifact, report)
+
+    # Make sure we only leave one directory
+    shutil.move(original_artifact, path + "/" + original_artifact)
+    shutil.move(rebuild_artifact, path + "/" + rebuild_artifact)
+    shutil.move(report, path + "/" + report)
+
+    exit(result)
 
 if __name__ == '__main__':
     main()

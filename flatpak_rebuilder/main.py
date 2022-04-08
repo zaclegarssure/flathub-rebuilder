@@ -138,14 +138,27 @@ def get_additional_deps(remote: str, installation: str, package: str) -> str | N
     else:
         return None
 
-def rebuild(dir: str, installation: str, package: str, install: bool = False):
+def find_flatpak_builder_commit_for_date(remote: str, installation: str, date: datetime) -> str:
+    cmd = ["flatpak", "remote-info", remote, "org.flatpak.Builder", "--log"]
+    output = run_flatpak_command(cmd, installation, capture_output=True)
+    commits = output.split("\n\n")[1:]
+    # We use the fact that --log return commits from the most recent to the oldest
+    for commit in commits:
+        commit = cmd_output_to_dict(commit)
+        commit_date = flatpak_date_to_datetime(commit['Date'])
+        if commit_date <= date:
+            return commit['Commit']
+
+    raise Exception("No commit matching the date has been found.")
+
+def rebuild(dir: str, installation: str, package: str, branch: str, install: bool = False):
     manifest = find_build_manifest(os.listdir(dir), package)
     if manifest is None:
         manifest = find_manifest(os.listdir(dir))
         if manifest is None:
             raise Exception("Could not find manifest (none or too many of them are present)")
 
-    cmd = ["flatpak-builder", "--disable-cache", "--force-clean", "build", manifest, "--repo=repo", "--bundle-sources"]
+    cmd = ["flatpak", "run", "org.flatpak.Builder", "--disable-cache", "--force-clean", "build", manifest, "--repo=repo", "--bundle-sources", "--mirror-screenshots-url=https://dl.flathub.org/repo/screenshots", "--sandbox", "--default-branch=" + branch]
     if install:
         cmd.append("--install")
 
@@ -259,6 +272,7 @@ def main():
 
     original_path = flatpak_package_path(installation, package)
 
+
     # Init the build directory
     dir = package
     os.mkdir(dir)
@@ -273,6 +287,8 @@ def main():
         build_time_estimate = flatpak_date_to_datetime(metadatas['Date'])
         build_time = find_closest_time(original_path, build_time_estimate)
     build_timestamp = build_time.timestamp()
+
+    builder_commit = find_flatpak_builder_commit_for_date(remote, installation, build_time)
 
     #install_path = installation_path(installation).unwrap()
     manifest_path = original_path + "/files/manifest.json"
@@ -296,8 +312,8 @@ def main():
     pin_package_version(manifest['sdk']+"/x86_64/"+manifest['runtime-version'], manifest['sdk-commit'], installation, interactive)
     # A bit overkill but that ensures the everything is the same
     pin_package_version(manifest['runtime']+"/x86_64/"+manifest['runtime-version'], manifest['runtime-commit'], installation, interactive)
-    rebuild(path, installation, package, install=True)
-
+    pin_package_version("org.flatpak.Builder", builder_commit, installation, interactive)
+    rebuild(path, installation, package, metadatas['Branch'], install=True)
 
 if __name__ == '__main__':
     main()

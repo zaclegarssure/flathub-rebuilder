@@ -14,7 +14,7 @@ REMOTES_URLS_TO_LOCAL_DEPS = {
     "https://dl.flathub.org/repo/": "https://github.com/flathub/"
 }
 
-def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False, capture_output = False, cwd: str | None = None, interactive = True) -> str:
+def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False, capture_output = False, cwd: str | None = None, interactive = True, arch: str | None = None) -> str:
     if may_need_root and installation != "user":
         cmd.insert(0, "sudo")
 
@@ -25,6 +25,9 @@ def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False
             cmd.append("--system")
         case _:
             cmd.append("--installation="+installation)
+
+    if arch:
+        cmd.append("--arch="+arch)
 
     if not interactive:
         cmd.append("--noninteractive")
@@ -57,6 +60,8 @@ def parse_args() -> Namespace:
     )
     parser.add_argument('-c', '--commit',help="Commit number of the package to rebuild.")
     parser.add_argument('-t', '--time', help="Time to use for the rebuild.")
+    parser.add_argument('-a', '--arch',help="Cpu architeture to use for the build, by default will use the one available on the system.")
+
     install_group = parser.add_mutually_exclusive_group()
     install_group.add_argument(
         '-i',
@@ -82,15 +87,15 @@ def flatpak_info(installation: str, package: str) -> dict[str, str]:
     return cmd_output_to_dict(output)
 
 def cmd_output_to_dict(output: str) -> dict[str, str]:
-    result = [map(str.strip, line.split(':', 1)) for line in output.split('\n') if ':' in line]
+    result = [list(map(str.strip, line.split(':', 1))) for line in output.split('\n') if ':' in line]
     resultDict: dict[str, str] = dict(result)
     return resultDict
 
-def flatpak_install(remote: str, package: str, installation: str, interractive: bool):
+def flatpak_install(remote: str, package: str, installation: str, interractive: bool, arch: str):
     cmd = ["flatpak", "install", remote, package]
     if not interractive:
         cmd.append("--noninteractive")
-    run_flatpak_command(cmd, installation)
+    run_flatpak_command(cmd, installation, arch=arch)
 
 def flatpak_date_to_datetime(date: str) -> datetime:
     format = '%Y-%m-%d %H:%M:%S %z'
@@ -154,25 +159,29 @@ def find_flatpak_builder_commit_for_date(remote: str, installation: str, date: d
 
     raise Exception("No commit matching the date has been found.")
 
-def rebuild(dir: str, installation: str, package: str, branch: str, install: bool = False):
+def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, install: bool = False):
     manifest = find_build_manifest(os.listdir(dir), package)
     if manifest is None:
         manifest = find_manifest(os.listdir(dir))
         if manifest is None:
             raise Exception("Could not find manifest (none or too many of them are present)")
 
-    cmd = ["flatpak", "run", "org.flatpak.Builder", "--disable-cache", "--force-clean", "build", manifest, "--repo=repo", "--bundle-sources", "--mirror-screenshots-url=https://dl.flathub.org/repo/screenshots", "--sandbox", "--default-branch=" + branch]
+    extra_fb_args = ['--arch', arch]
+    if arch == 'x86_64':
+        extra_fb_args.append('--bundle-sources')
+
+    cmd = ["flatpak", "run", "org.flatpak.Builder", "--disable-cache", "--force-clean", "build", manifest, "--repo=repo", "--mirror-screenshots-url=https://dl.flathub.org/repo/screenshots", "--sandbox", "--default-branch=" + branch, *extra_fb_args, '--remove-tag=upstream-maintained']
     if install:
         cmd.append("--install")
 
     run_flatpak_command(cmd, installation, may_need_root=install, cwd=dir)
 
-def install_deps(dir: str, remote: str, installation: str):
+def install_deps(dir: str, remote: str, installation: str, arch: str):
     manifest = find_manifest(os.listdir(dir))
     if manifest is None:
         raise Exception("Could not find manifest (none or too many of them are present)")
-    cmd = ["flatpak-builder","--install-deps-from=" + remote, "--disable-cache", "--force-clean", "build", manifest, "--install-deps-only"]
-    run_flatpak_command(cmd, installation, cwd=dir)
+    cmd = ["flatpak", "run", "org.flatpak.Builder", "--install-deps-from=" + remote, "--disable-cache", "--force-clean", "build", manifest, "--install-deps-only"]
+    run_flatpak_command(cmd, installation, cwd=dir, arch=arch)
 
 def find_manifest(files: list[str]) -> str | None:
     manifests = [file for file in files if file == "manifest.json"]
@@ -253,9 +262,25 @@ def run_diffoscope(original_path: str, rebuild_path: str, html_output: str | Non
 
     return subprocess.run(cmd).returncode
 
-def flatpak_uninstall(package: str, installation: str, interactive: bool):
+def flatpak_uninstall(package: str, installation: str, interactive: bool, arch: str):
     cmd = ["flatpak", "uninstall", package]
-    run_flatpak_command(cmd, installation, interactive=interactive)
+    run_flatpak_command(cmd, installation, interactive=interactive, arch=arch)
+
+def get_default_arch() -> str:
+    cmd = ["flatpak", "--default-arch"]
+
+    result = subprocess.run(cmd, capture_output=True)
+    result.check_returncode()
+
+    return result.stdout.decode('UTF-8').strip()
+
+def is_arch_available(arch: str) -> bool:
+    cmd = ["flatpak", "--supported-arches"]
+    result = subprocess.run(cmd, capture_output=True)
+    result.check_returncode()
+
+    available = result.stdout.decode('UTF-8').split('\n')
+    return arch in available
 
 
 def main():
@@ -268,6 +293,8 @@ def main():
     interactive = args.interactive
     commit = args.commit
     time = args.time
+    arch = args.arch
+
 
     if user_install:
         installation = "user"
@@ -280,9 +307,15 @@ def main():
     else:
         installation = "user"
 
+    if arch is None:
+        arch = get_default_arch()
+    elif not is_arch_available(arch):
+        raise Exception(f"Cannot build using, because {arch} is not an available architeture on your system.")
+
     git_url = get_additional_deps(remote, installation, package)
 
-    flatpak_install(remote, package, installation, interactive)
+    flatpak_install(remote, package, installation, interactive, arch)
+    flatpak_install(remote, "org.flatpak.Builder", installation, interactive, arch)
 
     if commit:
         pin_package_version(package, commit, installation, interactive)
@@ -334,24 +367,27 @@ def main():
     install_path = installation_path(installation)
     ostree_checkout(install_path + "/repo", metadatas['Ref'], original_artifact, root=(installation != "user"))
 
-    install_deps(path, remote, installation)
-    pin_package_version(manifest['sdk']+"/x86_64/"+manifest['runtime-version'], manifest['sdk-commit'], installation, interactive)
-    # A bit overkill but that ensures the everything is the same
-    pin_package_version(manifest['runtime']+"/x86_64/"+manifest['runtime-version'], manifest['runtime-commit'], installation, interactive)
     pin_package_version("org.flatpak.Builder", builder_commit, installation, interactive)
-    rebuild(path, installation, package, metadatas['Branch'], install=True)
+    install_deps(path, remote, installation, arch)
+    pin_package_version(manifest['sdk']+"/" + arch + "/"+manifest['runtime-version'], manifest['sdk-commit'], installation, interactive)
+    # A bit overkill but that ensures the everything is the same
+    pin_package_version(manifest['runtime']+"/" + arch + "/"+manifest['runtime-version'], manifest['runtime-commit'], installation, interactive)
+    rebuild(path, installation, package, metadatas['Branch'], arch, install=True)
 
     ostree_checkout(install_path + "/repo", metadatas['Ref'], rebuild_artifact, root=(installation != "user"))
 
     # Clean up
-    flatpak_uninstall(package, installation, interactive)
+    flatpak_uninstall(package, installation, interactive, arch)
 
     result = run_diffoscope(original_artifact, rebuild_artifact, report)
 
     # Make sure we only leave one directory
     shutil.move(original_artifact, path + "/" + original_artifact)
     shutil.move(rebuild_artifact, path + "/" + rebuild_artifact)
-    shutil.move(report, path + "/" + report)
+
+    # Report is only created when build is not reproducible
+    if result != 0:
+        shutil.move(report, path + "/" + report)
 
     exit(result)
 

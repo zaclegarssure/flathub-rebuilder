@@ -11,8 +11,13 @@ from datetime import timezone
 import json
 
 REMOTES_URLS_TO_LOCAL_DEPS = {
-    "https://dl.flathub.org/repo/": "https://github.com/flathub/"
+    "https://flathub.org/repo/": "https://github.com/flathub/"
 }
+
+FLATPAK_BUILDER = "org.flatpak.Builder"
+APPSTREAM_GLIB = "org.freedesktop.appstream-glib"
+FLAT_MANAGER = "org.flatpak.flat-manager-client"
+EXTERNAL_DATA_CHECKER = "org.flathub.flatpak-external-data-checker"
 
 def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False, capture_output = False, cwd: str | None = None, interactive = True, arch: str | None = None) -> str:
     if may_need_root and installation != "user":
@@ -61,6 +66,7 @@ def parse_args() -> Namespace:
     parser.add_argument('-c', '--commit',help="Commit number of the package to rebuild.")
     parser.add_argument('-t', '--time', help="Time to use for the rebuild.")
     parser.add_argument('-a', '--arch',help="Cpu architeture to use for the build, by default will use the one available on the system.")
+    parser.add_argument('--estimate-time', help="Let flatpak rebuilder find a time estimate of the build by scraping binaries.", action='store_true')
 
     install_group = parser.add_mutually_exclusive_group()
     install_group.add_argument(
@@ -91,10 +97,12 @@ def cmd_output_to_dict(output: str) -> dict[str, str]:
     resultDict: dict[str, str] = dict(result)
     return resultDict
 
-def flatpak_install(remote: str, package: str, installation: str, interractive: bool, arch: str):
+def flatpak_install(remote: str, package: str, installation: str, interractive: bool, arch: str, or_update: bool = False):
     cmd = ["flatpak", "install", remote, package]
     if not interractive:
         cmd.append("--noninteractive")
+    if or_update:
+        cmd.append("--or-update")
     run_flatpak_command(cmd, installation, arch=arch)
 
 def flatpak_date_to_datetime(date: str) -> datetime:
@@ -138,16 +146,15 @@ def flatpak_update(package: str, installation: str, interactive: bool):
 
     run_flatpak_command(cmd, installation, may_need_root=True)
 
-def get_additional_deps(remote: str, installation: str, package: str) -> str | None:
-    remote_url = flatpak_remote_url(remote, installation)
-    if remote_url in REMOTES_URLS_TO_LOCAL_DEPS:
-        git_url = REMOTES_URLS_TO_LOCAL_DEPS[remote_url]
-        return git_url + package
-    else:
+def get_additional_deps(remote: str, package: str) -> str | None:
+    if remote == "flathub":
+        return "https://github.com/flathub/" + package
+    elif remote == "flathub-beta":
         return None
+    return None
 
-def find_flatpak_builder_commit_for_date(remote: str, installation: str, date: datetime) -> str:
-    cmd = ["flatpak", "remote-info", remote, "org.flatpak.Builder", "--log"]
+def find_flatpak_commit_for_date(remote: str, installation: str, package: str, date: datetime) -> str:
+    cmd = ["flatpak", "remote-info", remote, package, "--log"]
     output = run_flatpak_command(cmd, installation, capture_output=True)
     commits = output.split("\n\n")[1:]
     # We use the fact that --log return commits from the most recent to the oldest
@@ -249,7 +256,7 @@ def find_closest_time(flatpak_package_path: str, estimate: datetime) -> datetime
     return estimate
 
 def ostree_checkout(repo: str, ref: str, dest: str, root = False):
-    cmd = ["ostree", "checkout", ref, dest, "--repo="+repo]
+    cmd = ["ostree", "checkout", ref, dest, "--repo="+repo, "-U"]
     if root:
         cmd.insert(0, "sudo")
 
@@ -282,6 +289,21 @@ def is_arch_available(arch: str) -> bool:
     available = result.stdout.decode('UTF-8').split('\n')
     return arch in available
 
+def flatpak_remote_add(remote: str, installation: str, url: str, gpg_import: str | None = None):
+    cmd = ["flatpak", "remote-add", "--if-not-exists", remote, url]
+    if gpg_import:
+        cmd.append("--gpg-import=" + gpg_import)
+
+    run_flatpak_command(cmd, installation, may_need_root=True)
+
+def flatpak_remote_modify_url(remote: str, installation: str, url: str):
+    cmd = ["flatpak", "remote-modify", "--url="+url, remote]
+
+    run_flatpak_command(cmd, installation, may_need_root=True)
+
+def ostree_init(repo: str, mode: str, path: str):
+    cmd = ["ostree", "--repo=" + repo, "--mode="+mode, "init"]
+    subprocess.run(cmd, cwd=path).check_returncode()
 
 def main():
     args = parse_args()
@@ -312,10 +334,22 @@ def main():
     elif not is_arch_available(arch):
         raise Exception(f"Cannot build using, because {arch} is not an available architeture on your system.")
 
-    git_url = get_additional_deps(remote, installation, package)
+    # Should get the right commit in case of older build
+    git_url = get_additional_deps(remote, package)
 
     flatpak_install(remote, package, installation, interactive, arch)
-    flatpak_install(remote, "org.flatpak.Builder", installation, interactive, arch)
+
+    flatpak_remote_add("flathub", installation, "https://flathub.org/repo/flathub.flatpakrepo")
+    # Make sure the name of the remote is flathub
+    flatpak_remote_modify_url("flathub", installation, "https://flathub.org/repo/")
+    # Same but with flathub beta
+    flatpak_remote_add("flathub-beta", installation, "https://flathub.org/beta-repo/")
+    flatpak_remote_modify_url("flathub-beta", installation, "https://flathub.org/beta-repo/flathub-beta.flatpakrepo")
+
+    flatpak_install("flathub", "org.flatpak.Builder", installation, interactive, arch)
+    flatpak_install("flathub", "org.freedesktop.appstream-glib", installation, interactive, arch)
+    flatpak_install("flathub", "org.flatpak.flat-manager-client", installation, interactive, arch)
+    flatpak_install("flathub", "org.flathub.flatpak-external-data-checker", installation, interactive, arch)
 
     if commit:
         pin_package_version(package, commit, installation, interactive)
@@ -337,19 +371,26 @@ def main():
 
     if time:
         build_time = flatpak_date_to_datetime(time)
-    else:
+    elif args.estimate_time:
         build_time_estimate = flatpak_date_to_datetime(metadatas['Date'])
         build_time = find_closest_time(original_path, build_time_estimate)
+    else:
+        build_time = flatpak_date_to_datetime(metadatas['Date'])
+
     build_timestamp = build_time.timestamp()
 
-    builder_commit = find_flatpak_builder_commit_for_date(remote, installation, build_time)
+    builder_commit = find_flatpak_commit_for_date(remote, installation, FLATPAK_BUILDER, build_time)
+    appstream_glib_commit = find_flatpak_commit_for_date(remote, installation, APPSTREAM_GLIB, build_time)
+    flat_manager_commit = find_flatpak_commit_for_date(remote, installation, FLAT_MANAGER, build_time)
+    external_data_checker_commit = find_flatpak_commit_for_date(remote, installation, EXTERNAL_DATA_CHECKER, build_time)
 
     manifest_path = original_path + "/files/manifest.json"
     with open(manifest_path, mode='r') as manifest:
         manifest_content = manifest.read()
         manifest = parse_manifest(manifest_content)
 
-    shutil.copy(manifest_path, path)
+    #shutil.copy(manifest_path, path)
+    ostree_init("repo", mode="archive-z2", path=path)
 
     # Change time of manifests files
     for root, _, files in os.walk(path):
@@ -367,14 +408,18 @@ def main():
     install_path = installation_path(installation)
     ostree_checkout(install_path + "/repo", metadatas['Ref'], original_artifact, root=(installation != "user"))
 
-    pin_package_version("org.flatpak.Builder", builder_commit, installation, interactive)
-    install_deps(path, remote, installation, arch)
+    pin_package_version(FLATPAK_BUILDER, builder_commit, installation, interactive)
+    pin_package_version(APPSTREAM_GLIB, appstream_glib_commit, installation, interactive)
+    pin_package_version(FLAT_MANAGER, flat_manager_commit, installation, interactive)
+    pin_package_version(EXTERNAL_DATA_CHECKER, external_data_checker_commit, installation, interactive)
+
+    #install_deps(path, remote, installation, arch)
     pin_package_version(manifest['sdk']+"/" + arch + "/"+manifest['runtime-version'], manifest['sdk-commit'], installation, interactive)
     # A bit overkill but that ensures the everything is the same
     pin_package_version(manifest['runtime']+"/" + arch + "/"+manifest['runtime-version'], manifest['runtime-commit'], installation, interactive)
-    rebuild(path, installation, package, metadatas['Branch'], arch, install=True)
+    rebuild(path, installation, package, metadatas['Branch'], arch, install=False)
 
-    ostree_checkout(install_path + "/repo", metadatas['Ref'], rebuild_artifact, root=(installation != "user"))
+    ostree_checkout(path + "/repo", metadatas['Ref'], rebuild_artifact, root=(installation != "user"))
 
     # Clean up
     flatpak_uninstall(package, installation, interactive, arch)

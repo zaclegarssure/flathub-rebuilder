@@ -7,7 +7,9 @@ import re
 import shutil
 from git.repo import Repo
 from datetime import datetime
+import time
 from datetime import timezone
+from pathlib import Path
 import json
 
 REMOTES_URLS_TO_LOCAL_DEPS = {
@@ -166,7 +168,7 @@ def find_flatpak_commit_for_date(remote: str, installation: str, package: str, d
 
     raise Exception("No commit matching the date has been found.")
 
-def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, install: bool = False):
+def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, install: bool = False) -> tuple[int, float]:
     manifest = find_build_manifest(os.listdir(dir), package)
     if manifest is None:
         manifest = find_manifest(os.listdir(dir))
@@ -177,11 +179,20 @@ def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, i
     if arch == 'x86_64':
         extra_fb_args.append('--bundle-sources')
 
-    cmd = ["flatpak", "run", "org.flatpak.Builder", "--disable-cache", "--force-clean", "build", manifest, "--repo=repo", "--mirror-screenshots-url=https://dl.flathub.org/repo/screenshots", "--sandbox", "--default-branch=" + branch, *extra_fb_args, '--remove-tag=upstream-maintained']
+    cmd = ["flatpak", "run", "org.flatpak.Builder", "--disable-cache", "--force-clean", "build", manifest, "--download-only"]
+    run_flatpak_command(cmd, installation, cwd=dir)
+
+    download_size = sum(f.stat().st_size for f in Path(dir + '/.flatpak-builder/downloads').rglob('*'))
+
+    cmd = ["flatpak", "run", "org.flatpak.Builder", "--disable-cache", "--force-clean", "build", manifest, "--repo=repo", "--mirror-screenshots-url=https://dl.flathub.org/repo/screenshots", "--sandbox", "--default-branch=" + branch, *extra_fb_args, '--remove-tag=upstream-maintained', "--disable-download"]
     if install:
         cmd.append("--install")
 
+    before = time.process_time()
     run_flatpak_command(cmd, installation, may_need_root=install, cwd=dir)
+    after = time.process_time()
+
+    return (download_size, after - before)
 
 def install_deps(dir: str, remote: str, installation: str, arch: str):
     manifest = find_manifest(os.listdir(dir))
@@ -305,6 +316,10 @@ def ostree_init(repo: str, mode: str, path: str):
     cmd = ["ostree", "--repo=" + repo, "--mode="+mode, "init"]
     subprocess.run(cmd, cwd=path).check_returncode()
 
+def generate_deltas(repo_dir: str, repo: str):
+    cmd = 'flatpak build-update-repo --generate-static-deltas --static-delta-ignore-ref=*.Debug --static-delta-ignore-ref=*.Sources ' + repo
+    subprocess.run(cmd, cwd=repo_dir, shell=True).check_returncode()
+
 def main():
     args = parse_args()
     remote = args.remote
@@ -347,9 +362,6 @@ def main():
     flatpak_remote_modify_url("flathub-beta", installation, "https://flathub.org/beta-repo/flathub-beta.flatpakrepo")
 
     flatpak_install("flathub", "org.flatpak.Builder", installation, interactive, arch)
-    flatpak_install("flathub", "org.freedesktop.appstream-glib", installation, interactive, arch)
-    flatpak_install("flathub", "org.flatpak.flat-manager-client", installation, interactive, arch)
-    flatpak_install("flathub", "org.flathub.flatpak-external-data-checker", installation, interactive, arch)
 
     if commit:
         pin_package_version(package, commit, installation, interactive)
@@ -380,9 +392,6 @@ def main():
     build_timestamp = build_time.timestamp()
 
     builder_commit = find_flatpak_commit_for_date(remote, installation, FLATPAK_BUILDER, build_time)
-    appstream_glib_commit = find_flatpak_commit_for_date(remote, installation, APPSTREAM_GLIB, build_time)
-    flat_manager_commit = find_flatpak_commit_for_date(remote, installation, FLAT_MANAGER, build_time)
-    external_data_checker_commit = find_flatpak_commit_for_date(remote, installation, EXTERNAL_DATA_CHECKER, build_time)
 
     manifest_path = original_path + "/files/manifest.json"
     with open(manifest_path, mode='r') as manifest:
@@ -403,21 +412,23 @@ def main():
     rebuild_artifact = package+".rebuild"
     report = package+".report.html"
 
-    #for sdk_extension in manifest['sdk-extensions']
-    #    flatpak_install()
+    for sdk_extension in manifest.get('sdk-extensions', []):
+        flatpak_install(remote, sdk_extension, installation, interactive, arch)
+        extenstion_commit = find_flatpak_commit_for_date(remote, installation, sdk_extension, build_time)
+        pin_package_version(sdk_extension, extenstion_commit, installation, interactive)
+
     install_path = installation_path(installation)
     ostree_checkout(install_path + "/repo", metadatas['Ref'], original_artifact, root=(installation != "user"))
 
     pin_package_version(FLATPAK_BUILDER, builder_commit, installation, interactive)
-    pin_package_version(APPSTREAM_GLIB, appstream_glib_commit, installation, interactive)
-    pin_package_version(FLAT_MANAGER, flat_manager_commit, installation, interactive)
-    pin_package_version(EXTERNAL_DATA_CHECKER, external_data_checker_commit, installation, interactive)
 
     #install_deps(path, remote, installation, arch)
     pin_package_version(manifest['sdk']+"/" + arch + "/"+manifest['runtime-version'], manifest['sdk-commit'], installation, interactive)
     # A bit overkill but that ensures the everything is the same
     pin_package_version(manifest['runtime']+"/" + arch + "/"+manifest['runtime-version'], manifest['runtime-commit'], installation, interactive)
-    rebuild(path, installation, package, metadatas['Branch'], arch, install=False)
+    (dep_size, build_length) = rebuild(path, installation, package, metadatas['Branch'], arch, install=False)
+
+    generate_deltas(path, "repo")
 
     ostree_checkout(path + "/repo", metadatas['Ref'], rebuild_artifact, root=(installation != "user"))
 
@@ -429,6 +440,15 @@ def main():
     # Make sure we only leave one directory
     shutil.move(original_artifact, path + "/" + original_artifact)
     shutil.move(rebuild_artifact, path + "/" + rebuild_artifact)
+
+    # Keep a few stats to analyse later on.
+    statistics = {
+        "dep_size": dep_size,
+        "build_length": build_length,
+    }
+    statistics = json.dumps(statistics, indent=4)
+    with open(path + "/stats.json", "w") as f:
+        f.write(statistics)
 
     # Report is only created when build is not reproducible
     if result != 0:

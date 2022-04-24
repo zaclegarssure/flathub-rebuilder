@@ -181,7 +181,7 @@ def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, i
     cmd = ["flatpak", "run", "org.flatpak.Builder", "--disable-cache", "--force-clean", "build", manifest, "--download-only"]
     run_flatpak_command(cmd, installation, cwd=dir)
 
-    download_size = sum(f.stat().st_size for f in Path(dir + '/.flatpak-builder/downloads').rglob('*'))
+    download_size = sum(f.stat().st_size for f in Path(dir + '/.flatpak-builder').rglob('*'))
 
     cmd = ["flatpak", "run", "org.flatpak.Builder", "--disable-cache", "--force-clean", "build", manifest, "--repo=repo", "--mirror-screenshots-url=https://dl.flathub.org/repo/screenshots", "--sandbox", "--default-branch=" + branch, *extra_fb_args, '--remove-tag=upstream-maintained', "--disable-download"]
     if install:
@@ -417,6 +417,13 @@ def main():
         flatpak_install(remote, full_name, installation, interactive, arch)
         extenstion_commit = find_flatpak_commit_for_date(remote, installation, full_name, build_time)
         pin_package_version(full_name, extenstion_commit, installation, interactive)
+
+    base_app = manifest.get('base')
+    if base_app != None:
+        full_name = f"{base_app}/{arch}/{manifest['base-version']}"
+        flatpak_install(remote, full_name, installation, interactive, arch)
+        base_app_commit = find_flatpak_commit_for_date(remote, installation, full_name, build_time)
+        pin_package_version(full_name, base_app_commit, installation, interactive)
 
     install_path = installation_path(installation)
     ostree_checkout(f"{install_path}/repo", metadatas['Ref'], original_artifact, root=(installation != "user"))

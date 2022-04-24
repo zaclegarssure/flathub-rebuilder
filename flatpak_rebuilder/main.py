@@ -357,11 +357,10 @@ def main():
     # Make sure the name of the remote is flathub
     flatpak_remote_modify_url("flathub", installation, "https://flathub.org/repo/")
     # Same but with flathub beta
-    flatpak_remote_add("flathub-beta", installation, "https://flathub.org/beta-repo/")
+    flatpak_remote_add("flathub-beta", installation, "https://flathub.org/beta-repo/flathub-beta.flatpakrepo")
     flatpak_remote_modify_url("flathub-beta", installation, "https://flathub.org/beta-repo/flathub-beta.flatpakrepo")
 
     flatpak_install(remote, package, installation, interactive, arch)
-    flatpak_install("flathub", "org.flatpak.Builder", installation, interactive, arch)
 
     if commit:
         pin_package_version(package, commit, installation, interactive)
@@ -391,12 +390,21 @@ def main():
 
     build_timestamp = build_time.timestamp()
 
+    flatpak_install("flathub", "org.flatpak.Builder", installation, interactive, arch)
     builder_commit = find_flatpak_commit_for_date(remote, installation, FLATPAK_BUILDER, build_time)
+    pin_package_version(FLATPAK_BUILDER, builder_commit, installation, interactive)
 
     manifest_path = f"{original_path}/files/manifest.json"
     with open(manifest_path, mode='r') as manifest:
         manifest_content = manifest.read()
         manifest = parse_manifest(manifest_content)
+
+    flatpak_install(remote, f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}", installation, interactive, arch)
+    pin_package_version(f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}", manifest['sdk-commit'], installation, interactive)
+
+    flatpak_install(remote, f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}", installation, interactive, arch)
+    # A bit overkill but that ensures the everything is the same
+    pin_package_version(f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}", manifest['runtime-commit'], installation, interactive)
 
     #shutil.copy(manifest_path, path)
     ostree_init("repo", mode="archive-z2", path=path)
@@ -427,13 +435,6 @@ def main():
 
     install_path = installation_path(installation)
     ostree_checkout(f"{install_path}/repo", metadatas['Ref'], original_artifact, root=(installation != "user"))
-
-    pin_package_version(FLATPAK_BUILDER, builder_commit, installation, interactive)
-
-    #install_deps(path, remote, installation, arch)
-    pin_package_version(f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}", manifest['sdk-commit'], installation, interactive)
-    # A bit overkill but that ensures the everything is the same
-    pin_package_version(f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}", manifest['runtime-commit'], installation, interactive)
 
     (dep_size, build_length) = rebuild(path, installation, package, metadatas['Branch'], arch, install=False)
 

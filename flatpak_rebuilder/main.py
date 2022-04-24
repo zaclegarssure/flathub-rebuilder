@@ -58,7 +58,6 @@ def parse_args() -> Namespace:
         description="Given a reference to a flatpak, try to reproduce it and"
         "compare to the one from the repo."
     )
-    parser.add_argument('remote', help="The name of the remote repository, i.e. flathub")
     parser.add_argument('flatpak_name', help="The name of the flatpak to reproduce")
     parser.add_argument(
         '-int','--interactive',
@@ -322,7 +321,7 @@ def generate_deltas(repo_dir: str, repo: str):
 
 def main():
     args = parse_args()
-    remote = args.remote
+    remote = "flathub"
     package = args.flatpak_name
     user_install = args.user
     system_install = args.system

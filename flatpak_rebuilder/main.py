@@ -347,13 +347,13 @@ def main():
     if arch is None:
         arch = get_default_arch()
     elif not is_arch_available(arch):
-        raise Exception(f"Cannot build using, because {arch} is not an available architeture on your system.")
+        raise Exception(f"Cannot build, because {arch} is not an available architeture on your system.")
 
     # Should get the right commit in case of older build
     git_url = get_additional_deps(remote, package)
 
-    flatpak_install(remote, package, installation, interactive, arch)
 
+    # Add flathub and flathub-beta as remotes
     flatpak_remote_add("flathub", installation, "https://flathub.org/repo/flathub.flatpakrepo")
     # Make sure the name of the remote is flathub
     flatpak_remote_modify_url("flathub", installation, "https://flathub.org/repo/")
@@ -361,6 +361,7 @@ def main():
     flatpak_remote_add("flathub-beta", installation, "https://flathub.org/beta-repo/")
     flatpak_remote_modify_url("flathub-beta", installation, "https://flathub.org/beta-repo/flathub-beta.flatpakrepo")
 
+    flatpak_install(remote, package, installation, interactive, arch)
     flatpak_install("flathub", "org.flatpak.Builder", installation, interactive, arch)
 
     if commit:
@@ -376,7 +377,7 @@ def main():
     # Init the build directory
     dir = package
     os.mkdir(dir)
-    path = os.curdir + "/" + dir
+    path = f"{os.curdir}/{dir}"
     if git_url is not None:
         repo = Repo.clone_from(git_url,path)
         repo.submodule_update()
@@ -393,7 +394,7 @@ def main():
 
     builder_commit = find_flatpak_commit_for_date(remote, installation, FLATPAK_BUILDER, build_time)
 
-    manifest_path = original_path + "/files/manifest.json"
+    manifest_path = f"{original_path}/files/manifest.json"
     with open(manifest_path, mode='r') as manifest:
         manifest_content = manifest.read()
         manifest = parse_manifest(manifest_content)
@@ -413,24 +414,26 @@ def main():
     report = package+".report.html"
 
     for sdk_extension in manifest.get('sdk-extensions', []):
-        flatpak_install(remote, sdk_extension, installation, interactive, arch)
-        extenstion_commit = find_flatpak_commit_for_date(remote, installation, sdk_extension, build_time)
-        pin_package_version(sdk_extension, extenstion_commit, installation, interactive)
+        full_name = f"{sdk_extension}/{arch}/{manifest['runtime-version']}"
+        flatpak_install(remote, full_name, installation, interactive, arch)
+        extenstion_commit = find_flatpak_commit_for_date(remote, installation, full_name, build_time)
+        pin_package_version(full_name, extenstion_commit, installation, interactive)
 
     install_path = installation_path(installation)
-    ostree_checkout(install_path + "/repo", metadatas['Ref'], original_artifact, root=(installation != "user"))
+    ostree_checkout(f"{install_path}/repo", metadatas['Ref'], original_artifact, root=(installation != "user"))
 
     pin_package_version(FLATPAK_BUILDER, builder_commit, installation, interactive)
 
     #install_deps(path, remote, installation, arch)
-    pin_package_version(manifest['sdk']+"/" + arch + "/"+manifest['runtime-version'], manifest['sdk-commit'], installation, interactive)
+    pin_package_version(f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}", manifest['sdk-commit'], installation, interactive)
     # A bit overkill but that ensures the everything is the same
-    pin_package_version(manifest['runtime']+"/" + arch + "/"+manifest['runtime-version'], manifest['runtime-commit'], installation, interactive)
+    pin_package_version(f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}", manifest['runtime-commit'], installation, interactive)
+
     (dep_size, build_length) = rebuild(path, installation, package, metadatas['Branch'], arch, install=False)
 
     generate_deltas(path, "repo")
 
-    ostree_checkout(path + "/repo", metadatas['Ref'], rebuild_artifact, root=(installation != "user"))
+    ostree_checkout(f"{path}/repo", metadatas['Ref'], rebuild_artifact, root=(installation != "user"))
 
     # Clean up
     flatpak_uninstall(package, installation, interactive, arch)
@@ -438,8 +441,8 @@ def main():
     result = run_diffoscope(original_artifact, rebuild_artifact, report)
 
     # Make sure we only leave one directory
-    shutil.move(original_artifact, path + "/" + original_artifact)
-    shutil.move(rebuild_artifact, path + "/" + rebuild_artifact)
+    shutil.move(original_artifact, f"{path}/{original_artifact}")
+    shutil.move(rebuild_artifact, f"{path}/{rebuild_artifact}")
 
     # Keep a few stats to analyse later on.
     statistics = {
@@ -447,12 +450,12 @@ def main():
         "build_length": build_length,
     }
     statistics = json.dumps(statistics, indent=4)
-    with open(path + "/stats.json", "w") as f:
+    with open(f"{path}/stats.json", "w") as f:
         f.write(statistics)
 
     # Report is only created when build is not reproducible
     if result != 0:
-        shutil.move(report, path + "/" + report)
+        shutil.move(report, f"{path}/{report}")
 
     exit(result)
 

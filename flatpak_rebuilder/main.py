@@ -12,14 +12,7 @@ from datetime import timezone
 from pathlib import Path
 import json
 
-REMOTES_URLS_TO_LOCAL_DEPS = {
-    "https://flathub.org/repo/": "https://github.com/flathub/"
-}
-
 FLATPAK_BUILDER = "org.flatpak.Builder"
-APPSTREAM_GLIB = "org.freedesktop.appstream-glib"
-FLAT_MANAGER = "org.flatpak.flat-manager-client"
-EXTERNAL_DATA_CHECKER = "org.flathub.flatpak-external-data-checker"
 
 def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False, capture_output = False, cwd: str | None = None, interactive = True, arch: str | None = None) -> str:
     if may_need_root and installation != "user":
@@ -68,6 +61,7 @@ def parse_args() -> Namespace:
     parser.add_argument('-t', '--time', help="Time to use for the rebuild.")
     parser.add_argument('-a', '--arch',help="Cpu architeture to use for the build, by default will use the one available on the system.")
     parser.add_argument('--estimate-time', help="Let flatpak rebuilder find a time estimate of the build by scraping binaries.", action='store_true')
+    parser.add_argument('--beta', help="Use the beta branch of the package.", action='store_true')
 
     install_group = parser.add_mutually_exclusive_group()
     install_group.add_argument(
@@ -151,7 +145,7 @@ def get_additional_deps(remote: str, package: str) -> str | None:
     if remote == "flathub":
         return "https://github.com/flathub/" + package
     elif remote == "flathub-beta":
-        return None
+        return "https://github.com/flathub/" + package
     return None
 
 def find_flatpak_commit_for_date(remote: str, installation: str, package: str, date: datetime) -> str:
@@ -321,7 +315,6 @@ def generate_deltas(repo_dir: str, repo: str):
 
 def main():
     args = parse_args()
-    remote = "flathub"
     package = args.flatpak_name
     user_install = args.user
     system_install = args.system
@@ -330,7 +323,8 @@ def main():
     commit = args.commit
     time = args.time
     arch = args.arch
-
+    beta = args.beta
+    remote = "flathub" if not beta  else "flathub-beta"
 
     if user_install:
         installation = "user"
@@ -377,7 +371,10 @@ def main():
     os.mkdir(dir)
     path = f"{os.curdir}/{dir}"
     if git_url is not None:
-        repo = Repo.clone_from(git_url,path)
+        if beta:
+            repo = Repo.clone_from(git_url, path, branch='beta')
+        else:
+            repo = Repo.clone_from(git_url,path)
         repo.submodule_update()
 
     if time:

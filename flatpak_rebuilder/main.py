@@ -325,6 +325,12 @@ def main():
     arch = args.arch
     beta = args.beta
     remote = "flathub" if not beta  else "flathub-beta"
+    # Keep a few stats to analyse later on.
+    statistics = {
+        "name": package,
+        "build_sucess": False,
+        "is_reproducible": False,
+    }
 
     if user_install:
         installation = "user"
@@ -433,7 +439,18 @@ def main():
     install_path = installation_path(installation)
     ostree_checkout(f"{install_path}/repo", metadatas['Ref'], original_artifact, root=(installation != "user"))
 
-    (dep_size, build_length) = rebuild(path, installation, package, metadatas['Branch'], arch, install=False)
+    try:
+        (dep_size, build_length) = rebuild(path, installation, package, metadatas['Branch'], arch, install=False)
+        statistics["dep_size"] = dep_size,
+        statistics["build_length"] = build_length,
+    except Exception as e:
+        print(e)
+        statistics = json.dumps(statistics, indent=4)
+        with open(f"{path}/stats.json", "w") as f:
+            f.write(statistics)
+        exit(1)
+
+    statistics["build_sucess"] = True
 
     generate_deltas(path, "repo")
 
@@ -448,18 +465,17 @@ def main():
     shutil.move(original_artifact, f"{path}/{original_artifact}")
     shutil.move(rebuild_artifact, f"{path}/{rebuild_artifact}")
 
-    # Keep a few stats to analyse later on.
-    statistics = {
-        "dep_size": dep_size,
-        "build_length": build_length,
-    }
-    statistics = json.dumps(statistics, indent=4)
-    with open(f"{path}/stats.json", "w") as f:
-        f.write(statistics)
+
 
     # Report is only created when build is not reproducible
     if result != 0:
         shutil.move(report, f"{path}/{report}")
+    else:
+        statistics["is_reproducible"] = True
+
+    statistics = json.dumps(statistics, indent=4)
+    with open(f"{path}/stats.json", "w") as f:
+        f.write(statistics)
 
     exit(result)
 

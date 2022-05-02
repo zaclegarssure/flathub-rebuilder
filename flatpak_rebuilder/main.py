@@ -181,9 +181,10 @@ def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, i
     if install:
         cmd.append("--install")
 
-    before = time.process_time()
+    # We don't really need a super precise computation of time
+    before = time.time()
     run_flatpak_command(cmd, installation, may_need_root=install, cwd=dir)
-    after = time.process_time()
+    after = time.time()
 
     return (download_size, after - before)
 
@@ -325,6 +326,9 @@ def main():
     arch = args.arch
     beta = args.beta
     remote = "flathub" if not beta  else "flathub-beta"
+
+    # Make sure to avoid creating path issues.
+    package_path_name = package.replace("/", "_")
     # Keep a few stats to analyse later on.
     statistics = {
         "name": package,
@@ -373,7 +377,7 @@ def main():
 
 
     # Init the build directory
-    dir = package
+    dir = package_path_name
     os.mkdir(dir)
     path = f"{os.curdir}/{dir}"
     if git_url is not None:
@@ -403,11 +407,8 @@ def main():
         manifest = parse_manifest(manifest_content)
 
     flatpak_install(remote, f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}", installation, interactive, arch)
-    pin_package_version(f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}", manifest['sdk-commit'], installation, interactive)
 
     flatpak_install(remote, f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}", installation, interactive, arch)
-    # A bit overkill but that ensures the everything is the same
-    pin_package_version(f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}", manifest['runtime-commit'], installation, interactive)
 
     #shutil.copy(manifest_path, path)
     ostree_init("repo", mode="archive-z2", path=path)
@@ -419,9 +420,9 @@ def main():
             if file.endswith(".json") or file.endswith(".yml"):
                 os.utime(os.path.join(root, file), (build_timestamp, build_timestamp))
 
-    original_artifact = package+".original"
-    rebuild_artifact = package+".rebuild"
-    report = package+".report.html"
+    original_artifact = package_path_name + ".original"
+    rebuild_artifact = package_path_name + ".rebuild"
+    report = package_path_name + ".report.html"
 
     for sdk_extension in manifest.get('sdk-extensions', []):
         full_name = f"{sdk_extension}/{arch}/{manifest['runtime-version']}"
@@ -438,6 +439,10 @@ def main():
 
     install_path = installation_path(installation)
     ostree_checkout(f"{install_path}/repo", metadatas['Ref'], original_artifact, root=(installation != "user"))
+
+    pin_package_version(f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}", manifest['sdk-commit'], installation, interactive)
+    # A bit overkill but that ensures the everything is the same
+    pin_package_version(f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}", manifest['runtime-commit'], installation, interactive)
 
     try:
         (dep_size, build_length) = rebuild(path, installation, package, metadatas['Branch'], arch, install=False)
@@ -474,7 +479,7 @@ def main():
         statistics["is_reproducible"] = True
 
     statistics = json.dumps(statistics, indent=4)
-    with open(f"{path}/stats.json", "w") as f:
+    with open(f"{path}/{package_path_name}.stats.json", "w") as f:
         f.write(statistics)
 
     exit(result)

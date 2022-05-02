@@ -14,7 +14,7 @@ import json
 
 FLATPAK_BUILDER = "org.flatpak.Builder"
 
-def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False, capture_output = False, cwd: str | None = None, interactive = True, arch: str | None = None) -> str:
+def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False, capture_output = False, cwd: str | None = None, interactive = True, arch: str | None = None, check_returncode = True, capture_err = False) -> str:
     if may_need_root and installation != "user":
         cmd.insert(0, "sudo")
 
@@ -37,11 +37,13 @@ def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False
     else:
         result = subprocess.run(cmd, stderr=subprocess.PIPE, cwd=cwd)
 
-    if result.returncode != 0:
+    if result.returncode != 0 and check_returncode:
         raise Exception(result.stderr.decode('UTF-8')) 
     else:
         if capture_output:
             return result.stdout.decode('UTF-8')
+        elif capture_err:
+            return result.stderr.decode('UTF-8')
         else:
             return ""
 
@@ -91,6 +93,25 @@ def cmd_output_to_dict(output: str) -> dict[str, str]:
     result = [list(map(str.strip, line.split(':', 1))) for line in output.split('\n') if ':' in line]
     resultDict: dict[str, str] = dict(result)
     return resultDict
+
+def find_branch_for_date(remote: str, package: str, installation: str, arch: str, date: datetime) -> str:
+    cmd = ["flatpak", "remote-info", remote, package]
+    output = run_flatpak_command(cmd, installation,arch=arch,check_returncode=False, capture_err=True)
+    # If the command fail, the output will contain the list of possible branches
+    if "Multiple branches available" in output:
+        branches = output.split(':')[2].split(",")
+        # We start with the most up to date branch
+        for branch in reversed(branches):
+            branch = branch.strip()
+            try:
+                find_flatpak_commit_for_date(remote, installation, branch, date)
+                return branch
+            except Exception:
+                pass
+        raise Exception(f"Could not find a branch valid at the time of the build for {package}.")
+    else:
+        return package
+
 
 def flatpak_install(remote: str, package: str, installation: str, interractive: bool, arch: str, or_update: bool = False):
     cmd = ["flatpak", "install", remote, package]
@@ -196,13 +217,6 @@ def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, i
     }
 
     return stats
-
-def install_deps(dir: str, remote: str, installation: str, arch: str):
-    manifest = find_manifest(os.listdir(dir))
-    if manifest is None:
-        raise Exception("Could not find manifest (none or too many of them are present)")
-    cmd = ["flatpak", "run", "org.flatpak.Builder", "--install-deps-from=" + remote, "--disable-cache", "--force-clean", "build", manifest, "--install-deps-only"]
-    run_flatpak_command(cmd, installation, cwd=dir, arch=arch)
 
 def find_manifest(files: list[str]) -> str | None:
     manifests = [file for file in files if file == "manifest.json"]
@@ -323,6 +337,18 @@ def generate_deltas(repo_dir: str, repo: str):
     cmd = 'flatpak build-update-repo --generate-static-deltas --static-delta-ignore-ref=*.Debug --static-delta-ignore-ref=*.Sources ' + repo
     subprocess.run(cmd, cwd=repo_dir, shell=True).check_returncode()
 
+def flatpak_install_deps(remote: str, installation: str, arch: str, manifest_path: str) -> list[str]:
+    cmd = ["flatpak", "run", "org.flatpak.Builder", "build", manifest_path, "--install-deps-from="+remote, "--install-deps-only"]
+    output = run_flatpak_command(cmd, installation, arch=arch, capture_output=True)
+    result = list()
+    for line in output.split('\n'):
+        if line.startswith("Dependency Extension"):
+            line = line.split(':')[1].split(' ')[1:]
+            result.append(f"{line[0]}/{arch}/{line[1]}")
+
+    return result
+
+
 def main():
     args = parse_args()
     package = args.flatpak_name
@@ -413,9 +439,10 @@ def main():
         manifest_content = manifest.read()
         manifest = parse_manifest(manifest_content)
 
-    flatpak_install(remote, f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}", installation, interactive, arch)
+    sdk_extensions = flatpak_install_deps(remote, installation, arch, manifest_path)
 
-    flatpak_install(remote, f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}", installation, interactive, arch)
+    #flatpak_install(remote, f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}", installation, interactive, arch)
+    #flatpak_install(remote, f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}", installation, interactive, arch)
 
     #shutil.copy(manifest_path, path)
     ostree_init("repo", mode="archive-z2", path=path)
@@ -431,9 +458,16 @@ def main():
     rebuild_artifact = package_path_name + ".rebuild"
     report = package_path_name + ".report.html"
 
-    for sdk_extension in manifest.get('sdk-extensions', []):
-        full_name = f"{sdk_extension}/{arch}/{manifest['runtime-version']}"
-        flatpak_install(remote, full_name, installation, interactive, arch)
+    #sdk_extension_resolved = {}
+    #for sdk_extension in manifest.get('sdk-extensions', []):
+    #    full_name = f"{sdk_extension}/{arch}/{manifest['runtime-version']}"
+    #    try:
+    #        flatpak_install(remote, full_name, installation, interactive, arch)
+    #        sdk_extension_resolved[sdk_extension] = full_name
+    #    except:
+    #        guessed_branch = find_branch_for_date(remote, sdk_extension, installation, arch, build_time)
+    #        flatpak_install(remote, guessed_branch, installation, interactive, arch)
+    #        sdk_extension_resolved[sdk_extension] = guessed_branch
 
     base_app = manifest.get('base')
     if base_app != None:
@@ -444,10 +478,13 @@ def main():
 
     # We need to downgrade everything at the end (before the build) to avoid
     # having one dependency install actually update a previously downgraded other dep.
-    for sdk_extension in manifest.get('sdk-extensions', []):
-        full_name = f"{sdk_extension}/{arch}/{manifest['runtime-version']}"
-        extenstion_commit = find_flatpak_commit_for_date(remote, installation, full_name, build_time)
-        pin_package_version(full_name, extenstion_commit, installation, interactive)
+    #for sdk_extension in manifest.get('sdk-extensions', []):
+    #    branch = sdk_extension_resolved[sdk_extension]
+    #    extenstion_commit = find_flatpak_commit_for_date(remote, installation, branch, build_time)
+    #    pin_package_version(branch, extenstion_commit, installation, interactive)
+    for sdk_extension in sdk_extensions:
+        extension_commit = find_flatpak_commit_for_date(remote, installation, sdk_extension, build_time)
+        pin_package_version(sdk_extension, extension_commit, installation, interactive)
 
     builder_commit = find_flatpak_commit_for_date(remote, installation, FLATPAK_BUILDER, build_time)
     pin_package_version(FLATPAK_BUILDER, builder_commit, installation, interactive)
@@ -463,7 +500,6 @@ def main():
         build_stats = rebuild(path, installation, package, metadatas['Branch'], arch, install=False)
         statistics.update(build_stats)
     except Exception as e:
-        print(e)
         statistics = json.dumps(statistics, indent=4)
         with open(f"{path}/{package_path_name}.stats.json", "w") as f:
             f.write(statistics)

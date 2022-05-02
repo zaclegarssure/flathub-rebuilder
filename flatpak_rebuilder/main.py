@@ -161,7 +161,7 @@ def find_flatpak_commit_for_date(remote: str, installation: str, package: str, d
 
     raise Exception("No commit matching the date has been found.")
 
-def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, install: bool = False) -> tuple[int, float]:
+def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, install: bool = False) -> dict[str, int | float]:
     manifest = find_build_manifest(os.listdir(dir), package)
     if manifest is None:
         manifest = find_manifest(os.listdir(dir))
@@ -175,7 +175,9 @@ def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, i
     cmd = ["flatpak", "run", "org.flatpak.Builder", "--disable-cache", "--force-clean", "build", manifest, "--download-only"]
     run_flatpak_command(cmd, installation, cwd=dir)
 
-    download_size = sum(f.stat().st_size for f in Path(dir + '/.flatpak-builder').rglob('*'))
+    cache_size = sum(f.stat().st_size for f in Path(dir + '/.flatpak-builder').rglob('*'))
+    git_size = sum(f.stat().st_size for f in Path(dir + '/.flatpak-builder/git').rglob('*'))
+    dl_size = sum(f.stat().st_size for f in Path(dir + '/.flatpak-builder/downloads').rglob('*'))
 
     cmd = ["flatpak", "run", "org.flatpak.Builder", "--disable-cache", "--force-clean", "build", manifest, "--repo=repo", "--mirror-screenshots-url=https://dl.flathub.org/repo/screenshots", "--sandbox", "--default-branch=" + branch, *extra_fb_args, '--remove-tag=upstream-maintained', "--disable-download"]
     if install:
@@ -186,7 +188,14 @@ def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, i
     run_flatpak_command(cmd, installation, may_need_root=install, cwd=dir)
     after = time.time()
 
-    return (download_size, after - before)
+    stats = {
+        'buid_time': after - before,
+        'cache_size': cache_size,
+        'git_size': git_size,
+        'dl_size': dl_size
+    }
+
+    return stats
 
 def install_deps(dir: str, remote: str, installation: str, arch: str):
     manifest = find_manifest(os.listdir(dir))
@@ -398,8 +407,6 @@ def main():
     build_timestamp = build_time.timestamp()
 
     flatpak_install("flathub", "org.flatpak.Builder", installation, interactive, arch)
-    builder_commit = find_flatpak_commit_for_date(remote, installation, FLATPAK_BUILDER, build_time)
-    pin_package_version(FLATPAK_BUILDER, builder_commit, installation, interactive)
 
     manifest_path = f"{original_path}/files/manifest.json"
     with open(manifest_path, mode='r') as manifest:
@@ -427,8 +434,6 @@ def main():
     for sdk_extension in manifest.get('sdk-extensions', []):
         full_name = f"{sdk_extension}/{arch}/{manifest['runtime-version']}"
         flatpak_install(remote, full_name, installation, interactive, arch)
-        extenstion_commit = find_flatpak_commit_for_date(remote, installation, full_name, build_time)
-        pin_package_version(full_name, extenstion_commit, installation, interactive)
 
     base_app = manifest.get('base')
     if base_app != None:
@@ -436,6 +441,16 @@ def main():
         flatpak_install(remote, full_name, installation, interactive, arch)
         base_app_commit = find_flatpak_commit_for_date(remote, installation, full_name, build_time)
         pin_package_version(full_name, base_app_commit, installation, interactive)
+
+    # We need to downgrade everything at the end (before the build) to avoid
+    # having one dependency install actually update a previously downgraded other dep.
+    for sdk_extension in manifest.get('sdk-extensions', []):
+        full_name = f"{sdk_extension}/{arch}/{manifest['runtime-version']}"
+        extenstion_commit = find_flatpak_commit_for_date(remote, installation, full_name, build_time)
+        pin_package_version(full_name, extenstion_commit, installation, interactive)
+
+    builder_commit = find_flatpak_commit_for_date(remote, installation, FLATPAK_BUILDER, build_time)
+    pin_package_version(FLATPAK_BUILDER, builder_commit, installation, interactive)
 
     install_path = installation_path(installation)
     ostree_checkout(f"{install_path}/repo", metadatas['Ref'], original_artifact, root=(installation != "user"))
@@ -445,9 +460,8 @@ def main():
     pin_package_version(f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}", manifest['runtime-commit'], installation, interactive)
 
     try:
-        (dep_size, build_length) = rebuild(path, installation, package, metadatas['Branch'], arch, install=False)
-        statistics["dep_size"] = dep_size,
-        statistics["build_length"] = build_length,
+        build_stats = rebuild(path, installation, package, metadatas['Branch'], arch, install=False)
+        statistics.update(build_stats)
     except Exception as e:
         print(e)
         statistics = json.dumps(statistics, indent=4)
@@ -469,8 +483,6 @@ def main():
     # Make sure we only leave one directory
     shutil.move(original_artifact, f"{path}/{original_artifact}")
     shutil.move(rebuild_artifact, f"{path}/{rebuild_artifact}")
-
-
 
     # Report is only created when build is not reproducible
     if result != 0:

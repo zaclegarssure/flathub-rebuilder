@@ -465,8 +465,9 @@ def main():
     except Exception as e:
         print(e)
         statistics = json.dumps(statistics, indent=4)
-        with open(f"{path}/stats.json", "w") as f:
+        with open(f"{path}/{package_path_name}.stats.json", "w") as f:
             f.write(statistics)
+        shutil.move(original_artifact, f"{path}/{original_artifact}")
         exit(1)
 
     statistics["build_sucess"] = True
@@ -486,7 +487,11 @@ def main():
 
     # Report is only created when build is not reproducible
     if result != 0:
-        shutil.move(report, f"{path}/{report}")
+        # Sometimes diffoscope fails, cool
+        if os.path.exists(report):
+            shutil.move(report, f"{path}/{report}")
+        else:
+            statistics["diffoscope_failed"] = True
     else:
         statistics["is_reproducible"] = True
 

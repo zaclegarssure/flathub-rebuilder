@@ -350,7 +350,7 @@ def flatpak_install_deps(remote: str, installation: str, arch: str, manifest_pat
 
 def compute_folder_hash(path: str) -> str:
     # Sorry
-    cmd = f"find {path} -type f -print0 | sort -z | xargs -0 sha1sum | sed 's/\s.*$//' | sha1sum"
+    cmd = f"find {path} -type f -print0 | sort -z | xargs -0 sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"
     result = subprocess.run(cmd, capture_output=True, shell=True)
 
     return result.stdout.decode('UTF-8')
@@ -508,9 +508,12 @@ def main():
     # Unfortunatly, diffoscope sometimes crash, we therefore need to rely
     # on a more traditional diffing method.
     diffoscope_result = run_diffoscope(original_artifact, rebuild_artifact, report)
-    orginal_hash = compute_folder_hash(original_artifact)
+    original_hash = compute_folder_hash(original_artifact)
     rebuild_hash = compute_folder_hash(rebuild_artifact)
-    reproducible = (orginal_hash == rebuild_hash)
+    reproducible = (original_hash == rebuild_hash)
+
+    statistics["original_hash"] = original_hash
+    statistics["rebuild_hash"] = rebuild_hash
 
     # Make sure we only leave one directory
     shutil.move(original_artifact, f"{path}/{original_artifact}")

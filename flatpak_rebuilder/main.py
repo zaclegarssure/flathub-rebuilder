@@ -348,6 +348,12 @@ def flatpak_install_deps(remote: str, installation: str, arch: str, manifest_pat
 
     return result
 
+def compute_folder_hash(path: str) -> str:
+    # Sorry
+    cmd = f"find {path} -type f -print0 | sort -z | xargs -0 sha1sum | sed 's/\s.*$//' | sha1sum"
+    result = subprocess.run(cmd, capture_output=True, shell=True)
+
+    return result.stdout.decode('UTF-8')
 
 def main():
     args = parse_args()
@@ -441,8 +447,6 @@ def main():
 
     sdk_extensions = flatpak_install_deps(remote, installation, arch, manifest_path)
 
-    #flatpak_install(remote, f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}", installation, interactive, arch)
-    #flatpak_install(remote, f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}", installation, interactive, arch)
 
     #shutil.copy(manifest_path, path)
     ostree_init("repo", mode="archive-z2", path=path)
@@ -458,16 +462,6 @@ def main():
     rebuild_artifact = package_path_name + ".rebuild"
     report = package_path_name + ".report.html"
 
-    #sdk_extension_resolved = {}
-    #for sdk_extension in manifest.get('sdk-extensions', []):
-    #    full_name = f"{sdk_extension}/{arch}/{manifest['runtime-version']}"
-    #    try:
-    #        flatpak_install(remote, full_name, installation, interactive, arch)
-    #        sdk_extension_resolved[sdk_extension] = full_name
-    #    except:
-    #        guessed_branch = find_branch_for_date(remote, sdk_extension, installation, arch, build_time)
-    #        flatpak_install(remote, guessed_branch, installation, interactive, arch)
-    #        sdk_extension_resolved[sdk_extension] = guessed_branch
 
     base_app = manifest.get('base')
     if base_app != None:
@@ -478,10 +472,6 @@ def main():
 
     # We need to downgrade everything at the end (before the build) to avoid
     # having one dependency install actually update a previously downgraded other dep.
-    #for sdk_extension in manifest.get('sdk-extensions', []):
-    #    branch = sdk_extension_resolved[sdk_extension]
-    #    extenstion_commit = find_flatpak_commit_for_date(remote, installation, branch, build_time)
-    #    pin_package_version(branch, extenstion_commit, installation, interactive)
     for sdk_extension in sdk_extensions:
         extension_commit = find_flatpak_commit_for_date(remote, installation, sdk_extension, build_time)
         pin_package_version(sdk_extension, extension_commit, installation, interactive)
@@ -499,7 +489,7 @@ def main():
     try:
         build_stats = rebuild(path, installation, package, metadatas['Branch'], arch, install=False)
         statistics.update(build_stats)
-    except Exception as e:
+    except:
         statistics = json.dumps(statistics, indent=4)
         with open(f"{path}/{package_path_name}.stats.json", "w") as f:
             f.write(statistics)
@@ -515,27 +505,34 @@ def main():
     # Clean up
     flatpak_uninstall(package, installation, interactive, arch)
 
-    result = run_diffoscope(original_artifact, rebuild_artifact, report)
+    # Unfortunatly, diffoscope sometimes crash, we therefore need to rely
+    # on a more traditional diffing method.
+    diffoscope_result = run_diffoscope(original_artifact, rebuild_artifact, report)
+    orginal_hash = compute_folder_hash(original_artifact)
+    rebuild_hash = compute_folder_hash(rebuild_artifact)
+    reproducible = (orginal_hash == rebuild_hash)
 
     # Make sure we only leave one directory
     shutil.move(original_artifact, f"{path}/{original_artifact}")
     shutil.move(rebuild_artifact, f"{path}/{rebuild_artifact}")
 
     # Report is only created when build is not reproducible
-    if result != 0:
+    if diffoscope_result != 0:
         # Sometimes diffoscope fails, cool
         if os.path.exists(report):
             shutil.move(report, f"{path}/{report}")
         else:
             statistics["diffoscope_failed"] = True
-    else:
+    if reproducible:
         statistics["is_reproducible"] = True
+    else:
+        statistics["is_reproducible"] = False
 
     statistics = json.dumps(statistics, indent=4)
     with open(f"{path}/{package_path_name}.stats.json", "w") as f:
         f.write(statistics)
 
-    exit(result)
+    exit(not reproducible)
 
 if __name__ == '__main__':
     main()

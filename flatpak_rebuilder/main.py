@@ -27,6 +27,39 @@ def run_flatpak_command(
     check_returncode=True,
     capture_err=False,
 ) -> str:
+    """Runs a flatpak shell command.
+
+    Parameters
+    ----------
+    cmd
+        The command to execute.
+    installation
+        The flatpak installation to use (i.e user, system).
+    may_need_root : bool, optional
+        If true will use sudo if it runs with a system install.
+    capture_output : bool, optional
+        If true, will capture and return the output
+    cwd: str, optional
+        Run the command in this directory (if set).
+    interactive : bool, optional
+        Run the command in interactive mode.
+    arch: str, optional
+        Add the --arch=<arch> flag to the command.
+    check_returncode : bool, optional
+        If true, will check return code and throw exception if not 0.
+    capture_err : bool, optional
+        If true, will capture stderr and return it.
+
+    Returns
+    -------
+    str
+        Empty if no capture flag set, the command output (either stdout or stderr) otherwise.
+
+    Raises
+    ------
+    Exception
+        If check_returncode = True and the command returns a non zero code.
+    """
     if may_need_root and installation != "user":
         cmd.insert(0, "sudo")
 
@@ -61,6 +94,8 @@ def run_flatpak_command(
 
 
 def parse_args() -> Namespace:
+    """Parse the different command arguments."""
+
     parser = argparse.ArgumentParser(
         description="Given a reference to a flatpak, try to reproduce it and"
         "compare to the one from the repo."
@@ -107,12 +142,26 @@ def parse_args() -> Namespace:
 
 
 def flatpak_info(installation: str, package: str) -> dict[str, str]:
+    """Give information about a locally installed package.
+
+    Parameters
+    ----------
+    installation : str
+        The flatpak installtion in which to search the package.
+    package : str
+        Name of the package.
+
+    Returns
+    -------
+    dict[str, str]
+    """
     cmd = ["flatpak", "info", package]
     output = run_flatpak_command(cmd, installation, capture_output=True)
     return cmd_output_to_dict(output)
 
 
 def cmd_output_to_dict(output: str) -> dict[str, str]:
+    """Format commands with output of the form 'key : value' into a dictionary"""
     result = [
         list(map(str.strip, line.split(":", 1)))
         for line in output.split("\n")
@@ -120,31 +169,6 @@ def cmd_output_to_dict(output: str) -> dict[str, str]:
     ]
     resultDict: dict[str, str] = dict(result)
     return resultDict
-
-
-def find_branch_for_date(
-    remote: str, package: str, installation: str, arch: str, date: datetime
-) -> str:
-    cmd = ["flatpak", "remote-info", remote, package]
-    output = run_flatpak_command(
-        cmd, installation, arch=arch, check_returncode=False, capture_err=True
-    )
-    # If the command fail, the output will contain the list of possible branches
-    if "Multiple branches available" in output:
-        branches = output.split(":")[2].split(",")
-        # We start with the most up to date branch
-        for branch in reversed(branches):
-            branch = branch.strip()
-            try:
-                find_flatpak_commit_for_date(remote, installation, branch, date)
-                return branch
-            except Exception:
-                pass
-        raise Exception(
-            f"Could not find a branch valid at the time of the build for {package}."
-        )
-    else:
-        return package
 
 
 def flatpak_install(
@@ -155,6 +179,23 @@ def flatpak_install(
     arch: str,
     or_update: bool = False,
 ):
+    """Install a flatpak
+
+    Parameters
+    ----------
+    remote : str
+        Name of the remote (i.e flathub).
+    package : str
+        Name of the package.
+    installation: str
+        Name of the installation (i.e user)
+    interactive: bool
+        Run command in interactive mode or not.
+    arch : str
+        The architecture (i.e x86_64) to use.
+    or_update: bool, optional
+        If True and package is installed, it will get updated instead.
+    """
     cmd = ["flatpak", "install", remote, package]
     if not interractive:
         cmd.append("--noninteractive")
@@ -169,6 +210,7 @@ def flatpak_date_to_datetime(date: str) -> datetime:
 
 
 def installation_exists(name: str) -> bool:
+    """Check if a given flatpak installation exists."""
     result = subprocess.run(
         ["flatpak", "--installation=" + name, "list"], capture_output=True
     )
@@ -176,6 +218,7 @@ def installation_exists(name: str) -> bool:
 
 
 def installation_path(name: str) -> str:
+    """Find the file path of an installation."""
     if name == "user":
         return os.path.expanduser("~") + "/.local/share/flatpak/"
     elif name == "system":
@@ -198,6 +241,19 @@ def installation_path(name: str) -> str:
 def pin_package_version(
     package: str, commit: str, installation: str, interactive: bool
 ):
+    """Fix a locally installed flatpak to the specified commit.
+
+    Parameters
+    ----------
+    package : str
+        Name of the package.
+    commit : str
+        Commit to which the package will be downgraded/updated.
+    installation : str
+        Installation in which the package is installed.
+    interactive : bool
+        Run the command in interactive mode.
+    """
     cmd = ["flatpak", "update", package, "--commit=" + commit]
     if not interactive:
         cmd.append("--noninteractive")
@@ -206,6 +262,17 @@ def pin_package_version(
 
 
 def flatpak_update(package: str, installation: str, interactive: bool):
+    """Update a locally installed flatpak to the latest version.
+
+    Parameters
+    ----------
+    package : str
+        Name of the package.
+    installation : str
+        Installation in which the package is installed.
+    interactive : bool
+        Run the command in interactive mode.
+    """
     cmd = ["flatpak", "update", package]
     if not interactive:
         cmd.append("--noninteractive")
@@ -214,6 +281,9 @@ def flatpak_update(package: str, installation: str, interactive: bool):
 
 
 def get_additional_deps(remote: str, package: str) -> str | None:
+    """Get the link to the github repo, containing the manifest and some additional
+    dependencies used for the build.
+    """
     if remote == "flathub":
         return "https://github.com/flathub/" + package
     elif remote == "flathub-beta":
@@ -224,6 +294,20 @@ def get_additional_deps(remote: str, package: str) -> str | None:
 def find_flatpak_commit_for_date(
     remote: str, installation: str, package: str, date: datetime
 ) -> str:
+    """Find the latest commit of a flatpak, at a certain date. This is used to estimate
+    the commit used for certain dependencies where it is not dirrectly provided.
+
+    Parameters
+    ----------
+    remote : str
+        Name of the remote (i.e flathub)
+    installation : str
+        Installation in which the package is installed.
+    package : str
+        Name of the package.
+    date : datetime
+        Date at which the commit was the latest.
+    """
     cmd = ["flatpak", "remote-info", remote, package, "--log"]
     output = run_flatpak_command(cmd, installation, capture_output=True)
     commits = output.split("\n\n")[1:]
@@ -245,6 +329,34 @@ def rebuild(
     arch: str,
     install: bool = False,
 ) -> dict[str, int | float]:
+    """Rebuild a flatpak locally.
+
+    Parameters
+    ----------
+    dir : str
+        Path to where the build should be done.
+    installation : str
+        Installation to use for the different dependencies.
+    package : str
+        Name of the package to rebuild.
+    branch : str
+        Branch name (usefull because it is sometimes embedded in some file.)
+    arch : str
+        Architecture to use (i.e x86_64).
+    install : bool, optional
+        If True, will install the rebuild package in the given installation.
+
+    Returns
+    -------
+    dict[str, int | float]
+        It returns a dictionary containing the folowing statistics
+        {
+            "build_time": float
+            "cache_size": int
+            "git_size": int
+            "dl_size": int
+        }
+    """
     manifest = find_build_manifest(os.listdir(dir), package)
     if manifest is None:
         manifest = find_manifest(os.listdir(dir))
@@ -314,14 +426,19 @@ def rebuild(
 
 
 def find_manifest(files: list[str]) -> str | None:
+    """Find the manifest file (of the form manifest.json) in a series of file.
+    This is the fromat in which we find the manifest when it comes from the remote.
+    """
     manifests = [file for file in files if file == "manifest.json"]
     if len(manifests) > 1:
         return None
     return manifests[0]
 
 
-# Hope I could avoid that
 def find_build_manifest(files: list[str], package: str) -> str | None:
+    """Find the manifest file, it is always of the form package.yml/json/yaml.
+    This is the format in whcih we find the manifest when it comes from the github repo.
+    """
     manifests = [
         file
         for file in files
@@ -335,12 +452,29 @@ def find_build_manifest(files: list[str], package: str) -> str | None:
 
 
 def parse_manifest(manifest_content: str) -> dict[str, str]:
+    """Parse a json format manifest."""
     return json.loads(manifest_content)
 
 
 def flatpak_package_path(
     installation: str, package: str, arch: str | None = None
 ) -> str:
+    """Find the path to a locally installed package
+
+    Parameters
+    ----------
+    installation : str
+        The installation in which it will search the package.
+    package : str
+        The package to search for.
+    arch : str, optional
+        The architecture to use, in case you have multiple version of the packge installed, with different architecture.
+
+    Returns
+    -------
+    str
+        The path to the package.
+    """
     cmd = ["flatpak", "info", "-l", package]
     if arch:
         cmd.append("--arch=" + arch)
@@ -348,21 +482,10 @@ def flatpak_package_path(
     return flatpak_info.strip()
 
 
-def flatpak_remote_url(remote: str, installation: str) -> str:
-    cmd = ["flatpak", "remotes", "--columns=name,url"]
-    flatpak_remotes = run_flatpak_command(cmd, installation, capture_output=True)
-    if flatpak_remotes.isspace():
-        raise Exception(f"No remotes in installation {installation}.")
-    output = flatpak_remotes.strip().split("\n")
-    if len(output) >= 1:
-        remote_url = [line.split()[1] for line in output if line.split()[0] == remote]
-        if len(remote_url) == 1:
-            return remote_url[0]
-
-    raise Exception("Remote not found.")
-
-
 def find_time_in_binary(path: str) -> list[datetime]:
+    """This, with find_closest_time, is an attempt to automatically find binary embedded timestamps.
+    It does not work really well, so for now it is unused and I manually check for these timestamps if needed.
+    """
     cmd = ["strings", path]
     result = subprocess.run(cmd, capture_output=True)
     if result.returncode != 0:
@@ -382,6 +505,7 @@ def find_time_in_binary(path: str) -> list[datetime]:
 
 
 def find_closest_time(flatpak_package_path: str, estimate: datetime) -> datetime:
+    """Find timestamps in binary which are the closest to the first estimate."""
     times: list[datetime] = []
     for root, _, files in os.walk(flatpak_package_path + "/files/"):
         for file in files:
@@ -399,6 +523,20 @@ def find_closest_time(flatpak_package_path: str, estimate: datetime) -> datetime
 
 
 def ostree_checkout(repo: str, ref: str, dest: str, root=False):
+    """Perform an ostree checkout, namely, take the content of a commit and put it in a folder.
+    It uses the -U flag, which does not change file ownership and ignore x-attributes.
+
+    Parameters
+    ----------
+    repo : str
+        Path to the ostree repo.
+    ref : str
+        Name of the branch in the ostree repo.
+    dest : str
+        Path to the destination folder.
+    root : bool, optional.
+        If true, will run the command with sudo (needed depending on how the ostree is configured.)
+    """
     cmd = ["ostree", "checkout", ref, dest, "--repo=" + repo, "-U"]
     if root:
         cmd.insert(0, "sudo")
@@ -409,6 +547,7 @@ def ostree_checkout(repo: str, ref: str, dest: str, root=False):
 def run_diffoscope(
     original_path: str, rebuild_path: str, html_output: str | None = None
 ) -> int:
+    """Run diffoscope with the --exclude-directory-metadata flag set to yes. This ignores metadatas, such as timestamps."""
     cmd = [
         "diffoscope",
         original_path,
@@ -422,11 +561,13 @@ def run_diffoscope(
 
 
 def flatpak_uninstall(package: str, installation: str, interactive: bool, arch: str):
+    """uninstall a locally installed flatpak."""
     cmd = ["flatpak", "uninstall", package]
     run_flatpak_command(cmd, installation, interactive=interactive, arch=arch)
 
 
 def get_default_arch() -> str:
+    """Returns the default flatpak architecture of the system (most likely x86_64)."""
     cmd = ["flatpak", "--default-arch"]
 
     result = subprocess.run(cmd, capture_output=True)
@@ -436,6 +577,7 @@ def get_default_arch() -> str:
 
 
 def is_arch_available(arch: str) -> bool:
+    """Returns true if the following arch is available on the system."""
     cmd = ["flatpak", "--supported-arches"]
     result = subprocess.run(cmd, capture_output=True)
     result.check_returncode()
@@ -447,6 +589,7 @@ def is_arch_available(arch: str) -> bool:
 def flatpak_remote_add(
     remote: str, installation: str, url: str, gpg_import: str | None = None
 ):
+    """Add a remote to the installation."""
     cmd = ["flatpak", "remote-add", "--if-not-exists", remote, url]
     if gpg_import:
         cmd.append("--gpg-import=" + gpg_import)
@@ -455,6 +598,7 @@ def flatpak_remote_add(
 
 
 def flatpak_remote_modify_url(remote: str, installation: str, url: str):
+    """Modify a remote to make it point to the given url."""
     cmd = ["flatpak", "remote-modify", "--url=" + url, remote]
 
     run_flatpak_command(cmd, installation, may_need_root=True)
@@ -466,6 +610,9 @@ def ostree_init(repo: str, mode: str, path: str):
 
 
 def generate_deltas(repo_dir: str, repo: str):
+    """One of the last step done by the flathub buildbot, I have no idea what it does, but to be as consistent as
+    possible, we also do it here.
+    """
     cmd = (
         "flatpak build-update-repo --generate-static-deltas --static-delta-ignore-ref=*.Debug --static-delta-ignore-ref=*.Sources "
         + repo
@@ -476,6 +623,10 @@ def generate_deltas(repo_dir: str, repo: str):
 def flatpak_install_deps(
     remote: str, installation: str, arch: str, manifest_path: str
 ) -> list[str]:
+    """Install the needed flatpak deps (runtime, sdk, skd-extension, etc.) specified in the manifest.
+    It appears that flatpak-builder is capable of figuring out which branch should be used when fetching
+    an sdk-extension, we therefore parse the output of the command to isolate this information, it is returned as a list.
+    """
     cmd = [
         "flatpak",
         "run",

@@ -646,7 +646,9 @@ def flatpak_install_deps(
     return result
 
 
-def compute_folder_hash(path: str) -> str:
+def compute_folder_hash(path: str) -> str | None:
+    if not os.path.exists(path):
+        return None
     # Our previous hash method seemed to work, but in case there are soft-links, this one
     # should be more robust (I hope).
     return dirhash(path, "sha1", followlinks=True)
@@ -748,6 +750,7 @@ def main():
         build_time = find_closest_time(original_path, build_time_estimate)
     else:
         build_time = flatpak_date_to_datetime(metadatas["Date"])
+
 
     build_timestamp = build_time.timestamp()
 
@@ -855,9 +858,11 @@ def main():
     rebuild_bin_hash = compute_folder_hash(f"{rebuild_artifact}/files/bin")
     original_lib_hash = compute_folder_hash(f"{original_artifact}/files/lib")
     rebuild_lib_hash = compute_folder_hash(f"{rebuild_artifact}/files/lib")
+    original_lib32_hash = compute_folder_hash(f"{original_artifact}/files/lib32")
+    rebuild_lib32_hash = compute_folder_hash(f"{rebuild_artifact}/files/lib32")
     bin_reproducible = (original_bin_hash == rebuild_bin_hash) and (
         original_lib_hash == rebuild_lib_hash
-    )
+    ) and (original_lib32_hash == rebuild_lib32_hash)
 
     statistics["original_hash"] = original_hash
     statistics["rebuild_hash"] = rebuild_hash
@@ -865,6 +870,8 @@ def main():
     statistics["rebuild_bin_hash"] = rebuild_bin_hash
     statistics["original_lib_hash"] = original_lib_hash
     statistics["rebuild_lib_hash"] = rebuild_lib_hash
+    statistics["original_lib32_hash"] = original_lib32_hash
+    statistics["rebuild_lib32_hash"] = rebuild_lib32_hash
 
     statistics["is_reproducible"] = reproducible
     statistics["is_bin_reproducible"] = bin_reproducible

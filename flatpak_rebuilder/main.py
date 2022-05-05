@@ -15,7 +15,18 @@ from checksumdir import dirhash
 
 FLATPAK_BUILDER = "org.flatpak.Builder"
 
-def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False, capture_output = False, cwd: str | None = None, interactive = True, arch: str | None = None, check_returncode = True, capture_err = False) -> str:
+
+def run_flatpak_command(
+    cmd: list[str],
+    installation: str,
+    may_need_root=False,
+    capture_output=False,
+    cwd: str | None = None,
+    interactive=True,
+    arch: str | None = None,
+    check_returncode=True,
+    capture_err=False,
+) -> str:
     if may_need_root and installation != "user":
         cmd.insert(0, "sudo")
 
@@ -25,10 +36,10 @@ def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False
         case "system":
             cmd.append("--system")
         case _:
-            cmd.append("--installation="+installation)
+            cmd.append("--installation=" + installation)
 
     if arch:
-        cmd.append("--arch="+arch)
+        cmd.append("--arch=" + arch)
 
     if not interactive:
         cmd.append("--noninteractive")
@@ -39,12 +50,12 @@ def run_flatpak_command(cmd: list[str], installation: str, may_need_root = False
         result = subprocess.run(cmd, stderr=subprocess.PIPE, cwd=cwd)
 
     if result.returncode != 0 and check_returncode:
-        raise Exception(result.stderr.decode('UTF-8')) 
+        raise Exception(result.stderr.decode("UTF-8"))
     else:
         if capture_output:
-            return result.stdout.decode('UTF-8')
+            return result.stdout.decode("UTF-8")
         elif capture_err:
-            return result.stderr.decode('UTF-8')
+            return result.stderr.decode("UTF-8")
         else:
             return ""
 
@@ -54,53 +65,73 @@ def parse_args() -> Namespace:
         description="Given a reference to a flatpak, try to reproduce it and"
         "compare to the one from the repo."
     )
-    parser.add_argument('flatpak_name', help="The name of the flatpak to reproduce")
+    parser.add_argument("flatpak_name", help="The name of the flatpak to reproduce")
     parser.add_argument(
-        '-int','--interactive',
+        "-int",
+        "--interactive",
         help="If set, flatpaks install and build command will run in interactive mode, asking you for input.",
-        action='store_true'
+        action="store_true",
     )
-    parser.add_argument('-c', '--commit',help="Commit number of the package to rebuild.")
-    parser.add_argument('-t', '--time', help="Time to use for the rebuild.")
-    parser.add_argument('-a', '--arch',help="Cpu architeture to use for the build, by default will use the one available on the system.")
-    parser.add_argument('--estimate-time', help="Let flatpak rebuilder find a time estimate of the build by scraping binaries.", action='store_true')
-    parser.add_argument('--beta', help="Use the beta branch of the package.", action='store_true')
+    parser.add_argument(
+        "-c", "--commit", help="Commit number of the package to rebuild."
+    )
+    parser.add_argument("-t", "--time", help="Time to use for the rebuild.")
+    parser.add_argument(
+        "-a",
+        "--arch",
+        help="Cpu architeture to use for the build, by default will use the one available on the system.",
+    )
+    parser.add_argument(
+        "--estimate-time",
+        help="Let flatpak rebuilder find a time estimate of the build by scraping binaries.",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--beta", help="Use the beta branch of the package.", action="store_true"
+    )
 
     install_group = parser.add_mutually_exclusive_group()
     install_group.add_argument(
-        '-i',
-        '--installation',
-        help="Specifies the local installation to use, by default it will use the user flatpak install."
+        "-i",
+        "--installation",
+        help="Specifies the local installation to use, by default it will use the user flatpak install.",
     )
     install_group.add_argument(
-        '--user',
-        help="If sets, use user install.",
-        action='store_true'
+        "--user", help="If sets, use user install.", action="store_true"
     )
     install_group.add_argument(
-        '--system',
-        help="If sets, use system install.",
-        action='store_true'
+        "--system", help="If sets, use system install.", action="store_true"
     )
 
     return parser.parse_args()
+
 
 def flatpak_info(installation: str, package: str) -> dict[str, str]:
     cmd = ["flatpak", "info", package]
     output = run_flatpak_command(cmd, installation, capture_output=True)
     return cmd_output_to_dict(output)
 
+
 def cmd_output_to_dict(output: str) -> dict[str, str]:
-    result = [list(map(str.strip, line.split(':', 1))) for line in output.split('\n') if ':' in line]
+    result = [
+        list(map(str.strip, line.split(":", 1)))
+        for line in output.split("\n")
+        if ":" in line
+    ]
     resultDict: dict[str, str] = dict(result)
     return resultDict
 
-def find_branch_for_date(remote: str, package: str, installation: str, arch: str, date: datetime) -> str:
+
+def find_branch_for_date(
+    remote: str, package: str, installation: str, arch: str, date: datetime
+) -> str:
     cmd = ["flatpak", "remote-info", remote, package]
-    output = run_flatpak_command(cmd, installation,arch=arch,check_returncode=False, capture_err=True)
+    output = run_flatpak_command(
+        cmd, installation, arch=arch, check_returncode=False, capture_err=True
+    )
     # If the command fail, the output will contain the list of possible branches
     if "Multiple branches available" in output:
-        branches = output.split(':')[2].split(",")
+        branches = output.split(":")[2].split(",")
         # We start with the most up to date branch
         for branch in reversed(branches):
             branch = branch.strip()
@@ -109,12 +140,21 @@ def find_branch_for_date(remote: str, package: str, installation: str, arch: str
                 return branch
             except Exception:
                 pass
-        raise Exception(f"Could not find a branch valid at the time of the build for {package}.")
+        raise Exception(
+            f"Could not find a branch valid at the time of the build for {package}."
+        )
     else:
         return package
 
 
-def flatpak_install(remote: str, package: str, installation: str, interractive: bool, arch: str, or_update: bool = False):
+def flatpak_install(
+    remote: str,
+    package: str,
+    installation: str,
+    interractive: bool,
+    arch: str,
+    or_update: bool = False,
+):
     cmd = ["flatpak", "install", remote, package]
     if not interractive:
         cmd.append("--noninteractive")
@@ -122,39 +162,48 @@ def flatpak_install(remote: str, package: str, installation: str, interractive: 
         cmd.append("--or-update")
     run_flatpak_command(cmd, installation, arch=arch)
 
+
 def flatpak_date_to_datetime(date: str) -> datetime:
-    format = '%Y-%m-%d %H:%M:%S %z'
+    format = "%Y-%m-%d %H:%M:%S %z"
     return datetime.strptime(date, format)
 
+
 def installation_exists(name: str) -> bool:
-    result = subprocess.run(["flatpak", "--installation="+name, "list"], capture_output=True) 
+    result = subprocess.run(
+        ["flatpak", "--installation=" + name, "list"], capture_output=True
+    )
     return result.returncode == 0
+
 
 def installation_path(name: str) -> str:
     if name == "user":
-        return os.path.expanduser('~') + "/.local/share/flatpak/"
+        return os.path.expanduser("~") + "/.local/share/flatpak/"
     elif name == "system":
         return "/var/lib/flatpak/"
 
     flatpak_install_dir = "/etc/flatpak/installations.d/"
     install_confs = os.listdir(flatpak_install_dir)
     for config_file in install_confs:
-        with open(flatpak_install_dir + config_file, mode='r') as file:
-            content = file.read().split('\n')
+        with open(flatpak_install_dir + config_file, mode="r") as file:
+            content = file.read().split("\n")
             header = content[0]
-            attributes = [line.split('=', 1) for line in content[1:] if '=' in line]
+            attributes = [line.split("=", 1) for line in content[1:] if "=" in line]
             attributes = dict(attributes)
             if name in header:
-                return attributes['Path']
+                return attributes["Path"]
 
     raise Exception(f"Path of installation {name} was not found.")
 
-def pin_package_version(package: str, commit: str, installation: str, interactive: bool):
-    cmd = ["flatpak", "update", package, "--commit="+commit]
+
+def pin_package_version(
+    package: str, commit: str, installation: str, interactive: bool
+):
+    cmd = ["flatpak", "update", package, "--commit=" + commit]
     if not interactive:
         cmd.append("--noninteractive")
 
     run_flatpak_command(cmd, installation, may_need_root=True)
+
 
 def flatpak_update(package: str, installation: str, interactive: bool):
     cmd = ["flatpak", "update", package]
@@ -163,6 +212,7 @@ def flatpak_update(package: str, installation: str, interactive: bool):
 
     run_flatpak_command(cmd, installation, may_need_root=True)
 
+
 def get_additional_deps(remote: str, package: str) -> str | None:
     if remote == "flathub":
         return "https://github.com/flathub/" + package
@@ -170,38 +220,81 @@ def get_additional_deps(remote: str, package: str) -> str | None:
         return "https://github.com/flathub/" + package
     return None
 
-def find_flatpak_commit_for_date(remote: str, installation: str, package: str, date: datetime) -> str:
+
+def find_flatpak_commit_for_date(
+    remote: str, installation: str, package: str, date: datetime
+) -> str:
     cmd = ["flatpak", "remote-info", remote, package, "--log"]
     output = run_flatpak_command(cmd, installation, capture_output=True)
     commits = output.split("\n\n")[1:]
     # We use the fact that --log return commits from the most recent to the oldest
     for commit in commits:
         commit = cmd_output_to_dict(commit)
-        commit_date = flatpak_date_to_datetime(commit['Date'])
+        commit_date = flatpak_date_to_datetime(commit["Date"])
         if commit_date <= date:
-            return commit['Commit']
+            return commit["Commit"]
 
     raise Exception("No commit matching the date has been found.")
 
-def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, install: bool = False) -> dict[str, int | float]:
+
+def rebuild(
+    dir: str,
+    installation: str,
+    package: str,
+    branch: str,
+    arch: str,
+    install: bool = False,
+) -> dict[str, int | float]:
     manifest = find_build_manifest(os.listdir(dir), package)
     if manifest is None:
         manifest = find_manifest(os.listdir(dir))
         if manifest is None:
-            raise Exception("Could not find manifest (none or too many of them are present)")
+            raise Exception(
+                "Could not find manifest (none or too many of them are present)"
+            )
 
-    extra_fb_args = ['--arch', arch]
-    if arch == 'x86_64':
-        extra_fb_args.append('--bundle-sources')
+    extra_fb_args = ["--arch", arch]
+    if arch == "x86_64":
+        extra_fb_args.append("--bundle-sources")
 
-    cmd = ["flatpak", "run", "org.flatpak.Builder", "--disable-cache", "--force-clean", "build", manifest, "--download-only"]
+    cmd = [
+        "flatpak",
+        "run",
+        "org.flatpak.Builder",
+        "--disable-cache",
+        "--force-clean",
+        "build",
+        manifest,
+        "--download-only",
+    ]
     run_flatpak_command(cmd, installation, cwd=dir)
 
-    cache_size = sum(f.stat().st_size for f in Path(dir + '/.flatpak-builder').rglob('*'))
-    git_size = sum(f.stat().st_size for f in Path(dir + '/.flatpak-builder/git').rglob('*'))
-    dl_size = sum(f.stat().st_size for f in Path(dir + '/.flatpak-builder/downloads').rglob('*'))
+    cache_size = sum(
+        f.stat().st_size for f in Path(dir + "/.flatpak-builder").rglob("*")
+    )
+    git_size = sum(
+        f.stat().st_size for f in Path(dir + "/.flatpak-builder/git").rglob("*")
+    )
+    dl_size = sum(
+        f.stat().st_size for f in Path(dir + "/.flatpak-builder/downloads").rglob("*")
+    )
 
-    cmd = ["flatpak", "run", "org.flatpak.Builder", "--disable-cache", "--force-clean", "build", manifest, "--repo=repo", "--mirror-screenshots-url=https://dl.flathub.org/repo/screenshots", "--sandbox", "--default-branch=" + branch, *extra_fb_args, '--remove-tag=upstream-maintained', "--disable-download"]
+    cmd = [
+        "flatpak",
+        "run",
+        "org.flatpak.Builder",
+        "--disable-cache",
+        "--force-clean",
+        "build",
+        manifest,
+        "--repo=repo",
+        "--mirror-screenshots-url=https://dl.flathub.org/repo/screenshots",
+        "--sandbox",
+        "--default-branch=" + branch,
+        *extra_fb_args,
+        "--remove-tag=upstream-maintained",
+        "--disable-download",
+    ]
     if install:
         cmd.append("--install")
 
@@ -211,13 +304,14 @@ def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, i
     after = time.time()
 
     stats = {
-        'build_time': after - before,
-        'cache_size': cache_size,
-        'git_size': git_size,
-        'dl_size': dl_size
+        "build_time": after - before,
+        "cache_size": cache_size,
+        "git_size": git_size,
+        "dl_size": dl_size,
     }
 
     return stats
+
 
 def find_manifest(files: list[str]) -> str | None:
     manifests = [file for file in files if file == "manifest.json"]
@@ -225,42 +319,55 @@ def find_manifest(files: list[str]) -> str | None:
         return None
     return manifests[0]
 
+
 # Hope I could avoid that
 def find_build_manifest(files: list[str], package: str) -> str | None:
-    manifests = [file for file in files if file == package + ".json" or file == package + ".yml" or file == package + ".yaml"]
+    manifests = [
+        file
+        for file in files
+        if file == package + ".json"
+        or file == package + ".yml"
+        or file == package + ".yaml"
+    ]
     if len(manifests) > 1:
         return None
     return manifests[0]
 
+
 def parse_manifest(manifest_content: str) -> dict[str, str]:
     return json.loads(manifest_content)
 
-def flatpak_package_path(installation: str, package: str, arch: str | None = None) -> str:
+
+def flatpak_package_path(
+    installation: str, package: str, arch: str | None = None
+) -> str:
     cmd = ["flatpak", "info", "-l", package]
-    if (arch):
+    if arch:
         cmd.append("--arch=" + arch)
     flatpak_info = run_flatpak_command(cmd, installation, capture_output=True)
     return flatpak_info.strip()
+
 
 def flatpak_remote_url(remote: str, installation: str) -> str:
     cmd = ["flatpak", "remotes", "--columns=name,url"]
     flatpak_remotes = run_flatpak_command(cmd, installation, capture_output=True)
     if flatpak_remotes.isspace():
         raise Exception(f"No remotes in installation {installation}.")
-    output = flatpak_remotes.strip().split('\n')
-    if (len(output) >= 1):
+    output = flatpak_remotes.strip().split("\n")
+    if len(output) >= 1:
         remote_url = [line.split()[1] for line in output if line.split()[0] == remote]
-        if (len(remote_url) == 1):
+        if len(remote_url) == 1:
             return remote_url[0]
 
     raise Exception("Remote not found.")
+
 
 def find_time_in_binary(path: str) -> list[datetime]:
     cmd = ["strings", path]
     result = subprocess.run(cmd, capture_output=True)
     if result.returncode != 0:
         return []
-    output = result.stdout.decode('UTF-8').splitlines()
+    output = result.stdout.decode("UTF-8").splitlines()
     fulldate_pattern = re.compile(r"\w{3} \d\d \d{4} \d\d:\d\d:\d\d")
     dates: list[datetime] = []
     for str in output:
@@ -273,34 +380,51 @@ def find_time_in_binary(path: str) -> list[datetime]:
 
     return dates
 
+
 def find_closest_time(flatpak_package_path: str, estimate: datetime) -> datetime:
     times: list[datetime] = []
     for root, _, files in os.walk(flatpak_package_path + "/files/"):
-       for file in files:
-          times.extend(find_time_in_binary(os.path.join(root, file)))
+        for file in files:
+            times.extend(find_time_in_binary(os.path.join(root, file)))
 
     if len(times) > 0:
-        return times[min(range(len(times)), key=lambda t: abs(estimate.timestamp() - times[t].timestamp()))]
+        return times[
+            min(
+                range(len(times)),
+                key=lambda t: abs(estimate.timestamp() - times[t].timestamp()),
+            )
+        ]
 
     return estimate
 
-def ostree_checkout(repo: str, ref: str, dest: str, root = False):
-    cmd = ["ostree", "checkout", ref, dest, "--repo="+repo, "-U"]
+
+def ostree_checkout(repo: str, ref: str, dest: str, root=False):
+    cmd = ["ostree", "checkout", ref, dest, "--repo=" + repo, "-U"]
     if root:
         cmd.insert(0, "sudo")
 
     subprocess.run(cmd).check_returncode()
 
-def run_diffoscope(original_path: str, rebuild_path: str, html_output: str | None = None) -> int:
-    cmd = ["diffoscope", original_path, rebuild_path, "--exclude-directory-metadata=yes"]
+
+def run_diffoscope(
+    original_path: str, rebuild_path: str, html_output: str | None = None
+) -> int:
+    cmd = [
+        "diffoscope",
+        original_path,
+        rebuild_path,
+        "--exclude-directory-metadata=yes",
+    ]
     if html_output:
-        cmd.append("--html="+html_output)
+        cmd.append("--html=" + html_output)
 
     return subprocess.run(cmd).returncode
+
 
 def flatpak_uninstall(package: str, installation: str, interactive: bool, arch: str):
     cmd = ["flatpak", "uninstall", package]
     run_flatpak_command(cmd, installation, interactive=interactive, arch=arch)
+
 
 def get_default_arch() -> str:
     cmd = ["flatpak", "--default-arch"]
@@ -308,56 +432,79 @@ def get_default_arch() -> str:
     result = subprocess.run(cmd, capture_output=True)
     result.check_returncode()
 
-    return result.stdout.decode('UTF-8').strip()
+    return result.stdout.decode("UTF-8").strip()
+
 
 def is_arch_available(arch: str) -> bool:
     cmd = ["flatpak", "--supported-arches"]
     result = subprocess.run(cmd, capture_output=True)
     result.check_returncode()
 
-    available = result.stdout.decode('UTF-8').split('\n')
+    available = result.stdout.decode("UTF-8").split("\n")
     return arch in available
 
-def flatpak_remote_add(remote: str, installation: str, url: str, gpg_import: str | None = None):
+
+def flatpak_remote_add(
+    remote: str, installation: str, url: str, gpg_import: str | None = None
+):
     cmd = ["flatpak", "remote-add", "--if-not-exists", remote, url]
     if gpg_import:
         cmd.append("--gpg-import=" + gpg_import)
 
     run_flatpak_command(cmd, installation, may_need_root=True)
 
+
 def flatpak_remote_modify_url(remote: str, installation: str, url: str):
-    cmd = ["flatpak", "remote-modify", "--url="+url, remote]
+    cmd = ["flatpak", "remote-modify", "--url=" + url, remote]
 
     run_flatpak_command(cmd, installation, may_need_root=True)
 
+
 def ostree_init(repo: str, mode: str, path: str):
-    cmd = ["ostree", "--repo=" + repo, "--mode="+mode, "init"]
+    cmd = ["ostree", "--repo=" + repo, "--mode=" + mode, "init"]
     subprocess.run(cmd, cwd=path).check_returncode()
 
+
 def generate_deltas(repo_dir: str, repo: str):
-    cmd = 'flatpak build-update-repo --generate-static-deltas --static-delta-ignore-ref=*.Debug --static-delta-ignore-ref=*.Sources ' + repo
+    cmd = (
+        "flatpak build-update-repo --generate-static-deltas --static-delta-ignore-ref=*.Debug --static-delta-ignore-ref=*.Sources "
+        + repo
+    )
     subprocess.run(cmd, cwd=repo_dir, shell=True).check_returncode()
 
-def flatpak_install_deps(remote: str, installation: str, arch: str, manifest_path: str) -> list[str]:
-    cmd = ["flatpak", "run", "org.flatpak.Builder", "build", manifest_path, "--install-deps-from="+remote, "--install-deps-only"]
+
+def flatpak_install_deps(
+    remote: str, installation: str, arch: str, manifest_path: str
+) -> list[str]:
+    cmd = [
+        "flatpak",
+        "run",
+        "org.flatpak.Builder",
+        "build",
+        manifest_path,
+        "--install-deps-from=" + remote,
+        "--install-deps-only",
+    ]
     output = run_flatpak_command(cmd, installation, arch=arch, capture_output=True)
     result = list()
-    for line in output.split('\n'):
+    for line in output.split("\n"):
         if line.startswith("Dependency Extension"):
-            line = line.split(':')[1].split(' ')[1:]
+            line = line.split(":")[1].split(" ")[1:]
             result.append(f"{line[0]}/{arch}/{line[1]}")
 
     return result
 
+
 def compute_folder_hash(path: str) -> str:
     # Our previous hash method seemed to work, but in case there are soft-links, this one
     # should be more robust (I hope).
-    return dirhash(path, 'sha1', followlinks=True)
+    return dirhash(path, "sha1", followlinks=True)
     ## Sorry
-    #cmd = f"find {path} -type f -print0 | sort -z | xargs -0 sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"
-    #result = subprocess.run(cmd, capture_output=True, shell=True)
+    # cmd = f"find {path} -type f -print0 | sort -z | xargs -0 sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"
+    # result = subprocess.run(cmd, capture_output=True, shell=True)
 
-    #return result.stdout.decode('UTF-8')
+    # return result.stdout.decode('UTF-8')
+
 
 def main():
     args = parse_args()
@@ -370,7 +517,7 @@ def main():
     time = args.time
     arch = args.arch
     beta = args.beta
-    remote = "flathub" if not beta  else "flathub-beta"
+    remote = "flathub" if not beta else "flathub-beta"
 
     # Make sure to avoid creating path issues.
     package_path_name = package.replace("/", "_")
@@ -379,7 +526,7 @@ def main():
         "name": package,
         "build_sucess": False,
         "is_reproducible": False,
-        "use_fixed_time": time != None
+        "use_fixed_time": time != None,
     }
 
     if user_install:
@@ -396,19 +543,30 @@ def main():
     if arch is None:
         arch = get_default_arch()
     elif not is_arch_available(arch):
-        raise Exception(f"Cannot build, because {arch} is not an available architeture on your system.")
+        raise Exception(
+            f"Cannot build, because {arch} is not an available architeture on your system."
+        )
 
     # Should get the right commit in case of older build
     git_url = get_additional_deps(remote, package)
 
-
     # Add flathub and flathub-beta as remotes
-    flatpak_remote_add("flathub", installation, "https://flathub.org/repo/flathub.flatpakrepo")
+    flatpak_remote_add(
+        "flathub", installation, "https://flathub.org/repo/flathub.flatpakrepo"
+    )
     # Make sure the name of the remote is flathub
     flatpak_remote_modify_url("flathub", installation, "https://flathub.org/repo/")
     # Same but with flathub beta
-    flatpak_remote_add("flathub-beta", installation, "https://flathub.org/beta-repo/flathub-beta.flatpakrepo")
-    flatpak_remote_modify_url("flathub-beta", installation, "https://flathub.org/beta-repo/flathub-beta.flatpakrepo")
+    flatpak_remote_add(
+        "flathub-beta",
+        installation,
+        "https://flathub.org/beta-repo/flathub-beta.flatpakrepo",
+    )
+    flatpak_remote_modify_url(
+        "flathub-beta",
+        installation,
+        "https://flathub.org/beta-repo/flathub-beta.flatpakrepo",
+    )
 
     flatpak_install(remote, package, installation, interactive, arch)
 
@@ -421,39 +579,37 @@ def main():
 
     original_path = flatpak_package_path(installation, package)
 
-
     # Init the build directory
     dir = package_path_name
     os.mkdir(dir)
     path = f"{os.curdir}/{dir}"
     if git_url is not None:
         if beta:
-            repo = Repo.clone_from(git_url, path, branch='beta')
+            repo = Repo.clone_from(git_url, path, branch="beta")
         else:
-            repo = Repo.clone_from(git_url,path)
+            repo = Repo.clone_from(git_url, path)
         repo.submodule_update()
 
     if time:
         build_time = flatpak_date_to_datetime(time)
     elif args.estimate_time:
-        build_time_estimate = flatpak_date_to_datetime(metadatas['Date'])
+        build_time_estimate = flatpak_date_to_datetime(metadatas["Date"])
         build_time = find_closest_time(original_path, build_time_estimate)
     else:
-        build_time = flatpak_date_to_datetime(metadatas['Date'])
+        build_time = flatpak_date_to_datetime(metadatas["Date"])
 
     build_timestamp = build_time.timestamp()
 
     flatpak_install("flathub", "org.flatpak.Builder", installation, interactive, arch)
 
     manifest_path = f"{original_path}/files/manifest.json"
-    with open(manifest_path, mode='r') as manifest:
+    with open(manifest_path, mode="r") as manifest:
         manifest_content = manifest.read()
         manifest = parse_manifest(manifest_content)
 
     sdk_extensions = flatpak_install_deps(remote, installation, arch, manifest_path)
 
-
-    #shutil.copy(manifest_path, path)
+    # shutil.copy(manifest_path, path)
     ostree_init("repo", mode="archive-z2", path=path)
 
     # Change time of manifests files
@@ -467,32 +623,54 @@ def main():
     rebuild_artifact = package_path_name + ".rebuild"
     report = package_path_name + ".report.html"
 
-
-    base_app = manifest.get('base')
+    base_app = manifest.get("base")
     if base_app != None:
         full_name = f"{base_app}/{arch}/{manifest['base-version']}"
         flatpak_install(remote, full_name, installation, interactive, arch)
-        base_app_commit = find_flatpak_commit_for_date(remote, installation, full_name, build_time)
+        base_app_commit = find_flatpak_commit_for_date(
+            remote, installation, full_name, build_time
+        )
         pin_package_version(full_name, base_app_commit, installation, interactive)
 
     # We need to downgrade everything at the end (before the build) to avoid
     # having one dependency install actually update a previously downgraded other dep.
     for sdk_extension in sdk_extensions:
-        extension_commit = find_flatpak_commit_for_date(remote, installation, sdk_extension, build_time)
+        extension_commit = find_flatpak_commit_for_date(
+            remote, installation, sdk_extension, build_time
+        )
         pin_package_version(sdk_extension, extension_commit, installation, interactive)
 
-    builder_commit = find_flatpak_commit_for_date(remote, installation, FLATPAK_BUILDER, build_time)
+    builder_commit = find_flatpak_commit_for_date(
+        remote, installation, FLATPAK_BUILDER, build_time
+    )
     pin_package_version(FLATPAK_BUILDER, builder_commit, installation, interactive)
 
     install_path = installation_path(installation)
-    ostree_checkout(f"{install_path}/repo", metadatas['Ref'], original_artifact, root=(installation != "user"))
+    ostree_checkout(
+        f"{install_path}/repo",
+        metadatas["Ref"],
+        original_artifact,
+        root=(installation != "user"),
+    )
 
-    pin_package_version(f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}", manifest['sdk-commit'], installation, interactive)
+    pin_package_version(
+        f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}",
+        manifest["sdk-commit"],
+        installation,
+        interactive,
+    )
     # A bit overkill but that ensures the everything is the same
-    pin_package_version(f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}", manifest['runtime-commit'], installation, interactive)
+    pin_package_version(
+        f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}",
+        manifest["runtime-commit"],
+        installation,
+        interactive,
+    )
 
     try:
-        build_stats = rebuild(path, installation, package, metadatas['Branch'], arch, install=False)
+        build_stats = rebuild(
+            path, installation, package, metadatas["Branch"], arch, install=False
+        )
         statistics.update(build_stats)
     except:
         statistics = json.dumps(statistics, indent=4)
@@ -505,7 +683,12 @@ def main():
 
     generate_deltas(path, "repo")
 
-    ostree_checkout(f"{path}/repo", metadatas['Ref'], rebuild_artifact, root=(installation != "user"))
+    ostree_checkout(
+        f"{path}/repo",
+        metadatas["Ref"],
+        rebuild_artifact,
+        root=(installation != "user"),
+    )
 
     # Clean up
     flatpak_uninstall(package, installation, interactive, arch)
@@ -515,13 +698,15 @@ def main():
     diffoscope_result = run_diffoscope(original_artifact, rebuild_artifact, report)
     original_hash = compute_folder_hash(original_artifact)
     rebuild_hash = compute_folder_hash(rebuild_artifact)
-    reproducible = (original_hash == rebuild_hash)
+    reproducible = original_hash == rebuild_hash
 
     original_bin_hash = compute_folder_hash(f"{original_artifact}/files/bin")
     rebuild_bin_hash = compute_folder_hash(f"{rebuild_artifact}/files/bin")
     original_lib_hash = compute_folder_hash(f"{original_artifact}/files/lib")
     rebuild_lib_hash = compute_folder_hash(f"{rebuild_artifact}/files/lib")
-    bin_reproducible = (original_bin_hash == rebuild_bin_hash) and (original_lib_hash == rebuild_lib_hash)
+    bin_reproducible = (original_bin_hash == rebuild_bin_hash) and (
+        original_lib_hash == rebuild_lib_hash
+    )
 
     statistics["original_hash"] = original_hash
     statistics["rebuild_hash"] = rebuild_hash
@@ -545,12 +730,12 @@ def main():
         else:
             statistics["diffoscope_failed"] = True
 
-
     statistics = json.dumps(statistics, indent=4)
     with open(f"{path}/{package_path_name}.stats.json", "w") as f:
         f.write(statistics)
 
     exit(not reproducible)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

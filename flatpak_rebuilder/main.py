@@ -11,6 +11,7 @@ import time
 from datetime import timezone
 from pathlib import Path
 import json
+from checksumdir import dirhash
 
 FLATPAK_BUILDER = "org.flatpak.Builder"
 
@@ -210,7 +211,7 @@ def rebuild(dir: str, installation: str, package: str, branch: str, arch: str, i
     after = time.time()
 
     stats = {
-        'buid_time': after - before,
+        'build_time': after - before,
         'cache_size': cache_size,
         'git_size': git_size,
         'dl_size': dl_size
@@ -349,11 +350,14 @@ def flatpak_install_deps(remote: str, installation: str, arch: str, manifest_pat
     return result
 
 def compute_folder_hash(path: str) -> str:
-    # Sorry
-    cmd = f"find {path} -type f -print0 | sort -z | xargs -0 sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"
-    result = subprocess.run(cmd, capture_output=True, shell=True)
+    # Our previous hash method seemed to work, but in case there are soft-links, this one
+    # should be more robust (I hope).
+    return dirhash(path, 'sha1', followlinks=True)
+    ## Sorry
+    #cmd = f"find {path} -type f -print0 | sort -z | xargs -0 sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"
+    #result = subprocess.run(cmd, capture_output=True, shell=True)
 
-    return result.stdout.decode('UTF-8')
+    #return result.stdout.decode('UTF-8')
 
 def main():
     args = parse_args()
@@ -375,6 +379,7 @@ def main():
         "name": package,
         "build_sucess": False,
         "is_reproducible": False,
+        "use_fixed_time": time != None
     }
 
     if user_install:
@@ -512,8 +517,21 @@ def main():
     rebuild_hash = compute_folder_hash(rebuild_artifact)
     reproducible = (original_hash == rebuild_hash)
 
+    original_bin_hash = compute_folder_hash(f"{original_artifact}/files/bin")
+    rebuild_bin_hash = compute_folder_hash(f"{rebuild_artifact}/files/bin")
+    original_lib_hash = compute_folder_hash(f"{original_artifact}/files/lib")
+    rebuild_lib_hash = compute_folder_hash(f"{rebuild_artifact}/files/lib")
+    bin_reproducible = (original_bin_hash == rebuild_bin_hash) and (original_lib_hash == rebuild_lib_hash)
+
     statistics["original_hash"] = original_hash
     statistics["rebuild_hash"] = rebuild_hash
+    statistics["original_bin_hash"] = original_bin_hash
+    statistics["rebuild_bin_hash"] = rebuild_bin_hash
+    statistics["original_lib_hash"] = original_lib_hash
+    statistics["rebuild_lib_hash"] = rebuild_lib_hash
+
+    statistics["is_reproducible"] = reproducible
+    statistics["is_bin_reproducible"] = bin_reproducible
 
     # Make sure we only leave one directory
     shutil.move(original_artifact, f"{path}/{original_artifact}")
@@ -526,10 +544,7 @@ def main():
             shutil.move(report, f"{path}/{report}")
         else:
             statistics["diffoscope_failed"] = True
-    if reproducible:
-        statistics["is_reproducible"] = True
-    else:
-        statistics["is_reproducible"] = False
+
 
     statistics = json.dumps(statistics, indent=4)
     with open(f"{path}/{package_path_name}.stats.json", "w") as f:

@@ -15,6 +15,8 @@ import sys
 
 FLATPAK_BUILDER = "org.flatpak.Builder"
 
+class GitNotFoundException(Exception):
+    pass
 
 def run_flatpak_command(
     cmd: list[str],
@@ -317,15 +319,28 @@ def flatpak_update(package: str, installation: str, interactive: bool):
     run_flatpak_command(cmd, installation, may_need_root=True)
 
 
-def get_additional_deps(remote: str, package: str, date: datetime | None = None) -> str:
+def get_additional_deps(remote: str, package: str) -> str:
     """Get the link to the github repo, containing the manifest and some additional
-    dependencies used for the build. If date is set, will take the latest available commit for this date.
+    dependencies used for the build.
+
+    Raises
+    ------
+    Exception if the remote is not supported.
+    CalledProcessError if the repo does not exists.
     """
     if remote == "flathub":
-        return "https://github.com/flathub/" + package
+        link = "github.com/flathub/" + package
     elif remote == "flathub-beta":
-        return "https://github.com/flathub/" + package
-    raise Exception("Git repository not found, cannot build further.")
+        link = "github.com/flathub/" + package
+    else:
+        raise Exception(f"Remote {remote} is not supported.")
+
+    # Verify that repo exists
+    cmd = ["git", "ls-remote", "https://null:null@" + link]
+    if subprocess.run(cmd).returncode != 0:
+        raise GitNotFoundException(f"No git repository found for package: {package}")
+
+    return "https://" + link
 
 
 def find_flatpak_commit_for_date(

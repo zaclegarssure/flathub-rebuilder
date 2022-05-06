@@ -25,7 +25,7 @@ def run_flatpak_command(
     interactive=True,
     arch: str | None = None,
     check_returncode=True,
-    capture_err=False,
+    include_stderr=False,
 ) -> str:
     """Runs a flatpak shell command.
 
@@ -47,8 +47,8 @@ def run_flatpak_command(
         Add the --arch=<arch> flag to the command.
     check_returncode : bool, optional
         If true, will check return code and throw exception if not 0.
-    capture_err : bool, optional
-        If true, will capture stderr and return it.
+    include_stderr: bool, optional
+        If true, will pipe stderr in stdout and return it (regardless of capture_output).
 
     Returns
     -------
@@ -77,18 +77,18 @@ def run_flatpak_command(
     if not interactive:
         cmd.append("--noninteractive")
 
-    if capture_output:
+    if include_stderr:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd)
+    elif capture_output:
         result = subprocess.run(cmd, capture_output=True, cwd=cwd)
     else:
-        result = subprocess.run(cmd, stderr=subprocess.PIPE, cwd=cwd)
+        result = subprocess.run(cmd, cwd=cwd)
 
     if result.returncode != 0 and check_returncode:
         raise Exception(result.stderr.decode("UTF-8"))
     else:
-        if capture_output:
+        if capture_output or include_stderr:
             return result.stdout.decode("UTF-8")
-        elif capture_err:
-            return result.stderr.decode("UTF-8")
         else:
             return ""
 
@@ -115,6 +115,9 @@ def parse_args() -> Namespace:
         "-a",
         "--arch",
         help="Cpu architeture to use for the build, by default will use the one available on the system.",
+    )
+    parser.add_argument(
+        "--branch", help="Specify which branch of the flatpak to use."
     )
     parser.add_argument(
         "--estimate-time",
@@ -159,6 +162,18 @@ def flatpak_info(installation: str, package: str) -> dict[str, str]:
     output = run_flatpak_command(cmd, installation, capture_output=True)
     return cmd_output_to_dict(output)
 
+def get_available_branches(remote: str, installation: str, package: str, arch: str) -> list[str]:
+    """Returns all the available branches of a package id in remote
+    """
+    cmd = ["flatpak", "remote-info", remote, package, f"--arch={arch}"]
+    output = run_flatpak_command(cmd, installation, check_returncode=False, include_stderr=True)
+    # If the command fail, the output will contain the list of possible branches
+    if "Multiple branches available" in output:
+        branches = map(lambda s: s.strip().split('/')[-1],reversed(output.split(':')[2].split(",")))
+        return list(branches)
+    else:
+        metadatas = cmd_output_to_dict(output)
+        return [ metadatas['Branch'] ]
 
 def cmd_output_to_dict(output: str) -> dict[str, str]:
     """Format commands with output of the form 'key : value' into a dictionary"""
@@ -302,15 +317,15 @@ def flatpak_update(package: str, installation: str, interactive: bool):
     run_flatpak_command(cmd, installation, may_need_root=True)
 
 
-def get_additional_deps(remote: str, package: str) -> str | None:
+def get_additional_deps(remote: str, package: str, date: datetime | None = None) -> str:
     """Get the link to the github repo, containing the manifest and some additional
-    dependencies used for the build.
+    dependencies used for the build. If date is set, will take the latest available commit for this date.
     """
     if remote == "flathub":
         return "https://github.com/flathub/" + package
     elif remote == "flathub-beta":
         return "https://github.com/flathub/" + package
-    return None
+    raise Exception("Git repository not found, cannot build further.")
 
 
 def find_flatpak_commit_for_date(
@@ -671,14 +686,10 @@ def flatpak_install_deps(
 def compute_folder_hash(path: str) -> str | None:
     if not os.path.exists(path):
         return None
-    # Our previous hash method seemed to work, but in case there are soft-links, this one
+    # My previous hash method seemed to work, but in case there are soft-links, this one
     # should be more robust (I hope).
     return dirhash(path, "sha1", followlinks=True)
-    ## Sorry
-    # cmd = f"find {path} -type f -print0 | sort -z | xargs -0 sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"
-    # result = subprocess.run(cmd, capture_output=True, shell=True)
 
-    # return result.stdout.decode('UTF-8')
 
 def cleanup(to_unmask: list[str], installation: str):
     for pattern in to_unmask:
@@ -695,10 +706,11 @@ def main():
     commit = args.commit
     time = args.time
     arch = args.arch
+    branch = args.branch
     beta = args.beta
     remote = "flathub" if not beta else "flathub-beta"
 
-    # Make sure to avoid creating path issues.
+    # Make sure to avoid creating path issues. (It should not be needed actually)
     package_path_name = package.replace("/", "_")
     # Keep a few stats to analyse later on.
     statistics = {
@@ -723,8 +735,14 @@ def main():
         arch = get_default_arch()
     elif not is_arch_available(arch):
         raise Exception(
-            f"Cannot build, because {arch} is not an available architeture on your system."
+            f"Cannot build, because {arch} is not an available architecture on your system."
         )
+
+    available_branches = get_available_branches(remote, installation, package, arch)
+    if branch is not None and branch not in available_branches:
+        raise Exception(f"Cannot rebuild using branch: {branch}, because it does not exist.")
+    if branch is None:
+        branch = available_branches[0]
 
     # Should get the right commit in case of older build
     git_url = get_additional_deps(remote, package)
@@ -747,20 +765,22 @@ def main():
         "https://flathub.org/beta-repo/flathub-beta.flatpakrepo",
     )
 
-    flatpak_install(remote, package, installation, interactive, arch)
+    full_package_id = f"{package}/{arch}/{branch}"
+    flatpak_install(remote, full_package_id, installation, interactive, arch, or_update=True)
 
     to_unmask = list()
 
     try:
         if commit:
-            pin_package_version(package, commit, installation, interactive, mask=True)
-            to_unmask.append(package)
-        else:
-            flatpak_update(package, installation, interactive)
+            pin_package_version(full_package_id, commit, installation, interactive, mask=True)
+            to_unmask.append(full_package_id)
 
-        metadatas = flatpak_info(installation, package)
+        metadatas = flatpak_info(installation, full_package_id)
 
-        original_path = flatpak_package_path(installation, package)
+        # Sanity check
+        assert metadatas['Branch'] == branch
+
+        original_path = flatpak_package_path(installation, full_package_id)
 
         # Init the build directory
         dir = package_path_name
@@ -784,7 +804,7 @@ def main():
 
         build_timestamp = build_time.timestamp()
 
-        flatpak_install("flathub", "org.flatpak.Builder", installation, interactive, arch)
+        flatpak_install("flathub", FLATPAK_BUILDER, installation, interactive, arch)
 
         manifest_path = f"{original_path}/files/manifest.json"
         with open(manifest_path, mode="r") as manifest:
@@ -885,7 +905,7 @@ def main():
         )
 
         # Clean up
-        flatpak_uninstall(package, installation, interactive, arch)
+        flatpak_uninstall(full_package_id, installation, interactive, arch)
         cleanup(to_unmask, installation)
         to_unmask = list()
 

@@ -18,6 +18,10 @@ FLATPAK_BUILDER = "org.flatpak.Builder"
 class GitNotFoundException(Exception):
     pass
 
+class FlatpakCmdException(Exception):
+    def __init__(self, cmd: list[str], msg: str = ""):
+        super().__init__(f"Failed to run {cmd}, with the following error: {msg}")
+
 def run_flatpak_command(
     cmd: list[str],
     installation: str,
@@ -87,7 +91,12 @@ def run_flatpak_command(
         result = subprocess.run(cmd, cwd=cwd)
 
     if result.returncode != 0 and check_returncode:
-        raise Exception(result.stderr.decode("UTF-8"))
+        if include_stderr:
+            raise FlatpakCmdException(cmd, result.stdout.decode("UTF-8"))
+        elif capture_output:
+            raise FlatpakCmdException(cmd, result.stderr.decode("UTF-8"))
+        else:
+            raise FlatpakCmdException(cmd)
     else:
         if capture_output or include_stderr:
             return result.stdout.decode("UTF-8")
@@ -337,7 +346,7 @@ def get_additional_deps(remote: str, package: str) -> str:
 
     # Verify that repo exists
     cmd = ["git", "ls-remote", "https://null:null@" + link]
-    if subprocess.run(cmd).returncode != 0:
+    if subprocess.run(cmd, capture_output=True).returncode != 0:
         raise GitNotFoundException(f"No git repository found for package: {package}")
 
     return "https://" + link
@@ -734,6 +743,8 @@ def main():
         "is_reproducible": False,
         "use_fixed_time": time != None,
     }
+    if commit:
+        statistics['commit'] = commit
 
     if user_install:
         installation = "user"
@@ -759,7 +770,6 @@ def main():
     if branch is None:
         branch = available_branches[0]
 
-    # Should get the right commit in case of older build
     git_url = get_additional_deps(remote, package)
 
     # Add flathub and flathub-beta as remotes
@@ -797,17 +807,6 @@ def main():
 
         original_path = flatpak_package_path(installation, full_package_id)
 
-        # Init the build directory
-        dir = package_path_name
-        os.mkdir(dir)
-        path = f"{os.curdir}/{dir}"
-        if git_url is not None:
-            if beta:
-                repo = Repo.clone_from(git_url, path, branch="beta")
-            else:
-                repo = Repo.clone_from(git_url, path)
-            repo.submodule_update()
-
         if time:
             build_time = flatpak_date_to_datetime(time)
         elif args.estimate_time:
@@ -816,6 +815,20 @@ def main():
         else:
             build_time = flatpak_date_to_datetime(metadatas["Date"])
 
+        # Init the build directory
+        dir = package_path_name
+        os.mkdir(dir)
+        path = f"{os.curdir}/{dir}"
+        if beta:
+            repo = Repo.clone_from(git_url, path, branch="beta")
+        else:
+            repo = Repo.clone_from(git_url, path)
+        if commit:
+            for c in repo.iter_commits():
+                if c.committed_datetime < build_time:
+                    repo.git.checkout(c)
+                    break
+        repo.submodule_update()
 
         build_timestamp = build_time.timestamp()
 
@@ -969,11 +982,10 @@ def main():
         with open(f"{path}/{package_path_name}.stats.json", "w") as f:
             f.write(statistics)
 
-    except Exception as e:
-        sys.stderr.write(str(e))
+    except:
         cleanup(to_unmask, installation)
         to_unmask = list()
-        sys.exit(1)
+        raise
 
     sys.exit(not reproducible)
 

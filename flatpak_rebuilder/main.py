@@ -715,7 +715,7 @@ def compute_folder_hash(path: str) -> str | None:
     return dirhash(path, "sha1", followlinks=True)
 
 
-def cleanup(to_unmask: list[str], installation: str):
+def cleanup(to_unmask: set[str], installation: str):
     for pattern in to_unmask:
         mask_package(pattern, installation, un_mask=True)
 
@@ -793,12 +793,12 @@ def main():
     full_package_id = f"{package}/{arch}/{branch}"
     flatpak_install(remote, full_package_id, installation, interactive, arch, or_update=True)
 
-    to_unmask = list()
+    to_unmask = set()
 
     try:
         if commit:
             pin_package_version(full_package_id, commit, installation, interactive, mask=True)
-            to_unmask.append(full_package_id)
+            to_unmask.add(full_package_id)
 
         metadatas = flatpak_info(installation, full_package_id)
 
@@ -863,7 +863,7 @@ def main():
                 remote, installation, full_name, build_time
             )
             pin_package_version(full_name, base_app_commit, installation, interactive, mask=True)
-            to_unmask.append(full_name)
+            to_unmask.add(full_name)
 
         # We need to downgrade everything at the end (before the build) to avoid
         # having one dependency install actually update a previously downgraded other dep.
@@ -872,13 +872,13 @@ def main():
                 remote, installation, sdk_extension, build_time
             )
             pin_package_version(sdk_extension, extension_commit, installation, interactive, mask=True)
-            to_unmask.append(sdk_extension)
+            to_unmask.add(sdk_extension)
 
         builder_commit = find_flatpak_commit_for_date(
             remote, installation, FLATPAK_BUILDER, build_time
         )
         pin_package_version(FLATPAK_BUILDER, builder_commit, installation, interactive, mask=True)
-        to_unmask.append(FLATPAK_BUILDER)
+        to_unmask.add(FLATPAK_BUILDER)
 
         install_path = installation_path(installation)
         ostree_checkout(
@@ -888,15 +888,15 @@ def main():
             root=(installation != "user"),
         )
 
-        manifest_full_name = f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}"
+        sdk_full_name = f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}"
         pin_package_version(
-            manifest_full_name,
+            sdk_full_name,
             manifest["sdk-commit"],
             installation,
             interactive,
             mask=True
         )
-        to_unmask.append(manifest_full_name)
+        to_unmask.add(sdk_full_name)
 
         runtime_full_name = f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}" 
         # A bit overkill but that ensures the everything is the same
@@ -907,7 +907,7 @@ def main():
             interactive,
             mask=True
         )
-        to_unmask.append(runtime_full_name)
+        to_unmask.add(runtime_full_name)
 
         try:
             build_stats = rebuild(
@@ -935,7 +935,7 @@ def main():
         # Clean up
         flatpak_uninstall(full_package_id, installation, interactive, arch)
         cleanup(to_unmask, installation)
-        to_unmask = list()
+        to_unmask = set()
 
         # Unfortunatly, diffoscope sometimes crash, we therefore need to rely
         # on a more traditional diffing method.
@@ -984,7 +984,7 @@ def main():
 
     except:
         cleanup(to_unmask, installation)
-        to_unmask = list()
+        to_unmask = set()
         raise
 
     sys.exit(not reproducible)

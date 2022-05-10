@@ -757,21 +757,6 @@ def main():
     else:
         installation = "user"
 
-    if arch is None:
-        arch = get_default_arch()
-    elif not is_arch_available(arch):
-        raise Exception(
-            f"Cannot build, because {arch} is not an available architecture on your system."
-        )
-
-    available_branches = get_available_branches(remote, installation, package, arch)
-    if branch is not None and branch not in available_branches:
-        raise Exception(f"Cannot rebuild using branch: {branch}, because it does not exist.")
-    if branch is None:
-        branch = available_branches[0]
-
-    git_url = get_additional_deps(remote, package)
-
     # Add flathub and flathub-beta as remotes
     flatpak_remote_add(
         "flathub", installation, "https://flathub.org/repo/flathub.flatpakrepo"
@@ -789,6 +774,22 @@ def main():
         installation,
         "https://flathub.org/beta-repo/flathub-beta.flatpakrepo",
     )
+    
+    if arch is None:
+        arch = get_default_arch()
+    elif not is_arch_available(arch):
+        raise Exception(
+            f"Cannot build, because {arch} is not an available architecture on your system."
+        )
+
+    available_branches = get_available_branches(remote, installation, package, arch)
+    if branch is not None and branch not in available_branches:
+        raise Exception(f"Cannot rebuild using branch: {branch}, because it does not exist.")
+    if branch is None:
+        branch = available_branches[0]
+
+    git_url = get_additional_deps(remote, package)
+
 
     full_package_id = f"{package}/{arch}/{branch}"
     flatpak_install(remote, full_package_id, installation, interactive, arch, or_update=True)

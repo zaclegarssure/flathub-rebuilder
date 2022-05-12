@@ -714,6 +714,34 @@ def compute_folder_hash(path: str) -> str | None:
     # should be more robust (I hope).
     return dirhash(path, "sha1", followlinks=True)
 
+def compute_folder_bin_hash(path: str) -> str | None:
+    """ Computes the hash of a folder, while only considering non
+    text files (images, archives, compiled programs, ...)
+    """
+    if not os.path.exists(path):
+        return None
+
+    # Forgive Me Father For I Have Sinned
+    cmd = f"find {path} -type f -exec grep --null -IL . {{}} \; | LC_ALL=C sort -z | xargs -0 sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"
+    result = subprocess.run(cmd, capture_output=True, shell=True)
+
+    if result.returncode != 0:
+        return None
+    # Remove the last /n
+    return result.stdout.decode('UTF-8').strip()
+
+def compute_folder_elf_hash(path: str) -> str | None:
+    """ Computes the hash of a folder, while only considering elf files.
+    """
+    if not os.path.exists(path):
+        return None
+
+    cmd = f"find {path} -exec file {{}} \; | grep -i elf | cut -d: -f1 | xargs sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"
+    result = subprocess.run(cmd, capture_output=True, shell=True)
+
+    if result.returncode != 0:
+        return None
+    return result.stdout.decode('UTF-8').strip()
 
 def cleanup(to_unmask: set[str], installation: str):
     for pattern in to_unmask:
@@ -743,8 +771,6 @@ def main():
         "is_reproducible": False,
         "use_fixed_time": time != None,
     }
-    if commit:
-        statistics['commit'] = commit
 
     if user_install:
         installation = "user"
@@ -805,6 +831,11 @@ def main():
 
         # Sanity check
         assert metadatas['Branch'] == branch
+        if commit:
+            assert metadatas['Commit'] == commit
+
+        statistics['commit'] = metadatas['Commit']
+        statistics['branch'] = branch
 
         original_path = flatpak_package_path(installation, full_package_id)
 
@@ -815,6 +846,11 @@ def main():
             build_time = find_closest_time(original_path, build_time_estimate)
         else:
             build_time = flatpak_date_to_datetime(metadatas["Date"])
+
+        build_timestamp = build_time.timestamp()
+
+        statistics['time_of_rebuild'] = str(build_time)
+        statistics['timestamp_of_rebuild'] = build_timestamp
 
         # Init the build directory
         dir = package_path_name
@@ -831,7 +867,6 @@ def main():
                     break
         repo.submodule_update()
 
-        build_timestamp = build_time.timestamp()
 
         flatpak_install("flathub", FLATPAK_BUILDER, installation, interactive, arch)
 
@@ -866,8 +901,6 @@ def main():
             pin_package_version(full_name, base_app_commit, installation, interactive, mask=True)
             to_unmask.add(full_name)
 
-        # We need to downgrade everything at the end (before the build) to avoid
-        # having one dependency install actually update a previously downgraded other dep.
         for sdk_extension in sdk_extensions:
             extension_commit = find_flatpak_commit_for_date(
                 remote, installation, sdk_extension, build_time
@@ -900,7 +933,7 @@ def main():
         to_unmask.add(sdk_full_name)
 
         runtime_full_name = f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}" 
-        # A bit overkill but that ensures the everything is the same
+        # A bit overkill but that ensures everything is the same
         pin_package_version(
             runtime_full_name,
             manifest["runtime-commit"],
@@ -945,27 +978,25 @@ def main():
         rebuild_hash = compute_folder_hash(rebuild_artifact)
         reproducible = original_hash == rebuild_hash
 
-        original_bin_hash = compute_folder_hash(f"{original_artifact}/files/bin")
-        rebuild_bin_hash = compute_folder_hash(f"{rebuild_artifact}/files/bin")
-        original_lib_hash = compute_folder_hash(f"{original_artifact}/files/lib")
-        rebuild_lib_hash = compute_folder_hash(f"{rebuild_artifact}/files/lib")
-        original_lib32_hash = compute_folder_hash(f"{original_artifact}/files/lib32")
-        rebuild_lib32_hash = compute_folder_hash(f"{rebuild_artifact}/files/lib32")
-        bin_reproducible = (original_bin_hash == rebuild_bin_hash) and (
-            original_lib_hash == rebuild_lib_hash
-        ) and (original_lib32_hash == rebuild_lib32_hash)
+        original_bin_hash = compute_folder_bin_hash(original_artifact)
+        rebuild_bin_hash = compute_folder_bin_hash(rebuild_artifact)
+
+        original_elf_hash = compute_folder_elf_hash(original_artifact)
+        rebuild_elf_hash = compute_folder_elf_hash(rebuild_artifact)
+
+        bin_reproducible = (original_bin_hash == rebuild_bin_hash)
+        elf_reproducible = (original_elf_hash == rebuild_elf_hash)
 
         statistics["original_hash"] = original_hash
         statistics["rebuild_hash"] = rebuild_hash
         statistics["original_bin_hash"] = original_bin_hash
         statistics["rebuild_bin_hash"] = rebuild_bin_hash
-        statistics["original_lib_hash"] = original_lib_hash
-        statistics["rebuild_lib_hash"] = rebuild_lib_hash
-        statistics["original_lib32_hash"] = original_lib32_hash
-        statistics["rebuild_lib32_hash"] = rebuild_lib32_hash
+        statistics["original_elf_hash"] = original_elf_hash
+        statistics["rebuild_elf_hash"] = rebuild_elf_hash
 
         statistics["is_reproducible"] = reproducible
         statistics["is_bin_reproducible"] = bin_reproducible
+        statistics["is_elf_reproducible"] = elf_reproducible
 
         # Make sure we only leave one directory
         shutil.move(original_artifact, f"{path}/{original_artifact}")

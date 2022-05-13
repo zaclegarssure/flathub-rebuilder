@@ -743,6 +743,22 @@ def compute_folder_elf_hash(path: str) -> str | None:
         return None
     return result.stdout.decode('UTF-8').strip()
 
+def compute_repro_score(original: str, rebuild: str) -> tuple[int, int, float] | None:
+    cmd = f"diff -rq {original} {rebuild} --no-dereference | wc -l"
+    count_cmd = f"find {original} -type f | wc -l"
+    result_diff = subprocess.run(cmd, capture_output=True, shell=True)
+    result_count = subprocess.run(count_cmd, capture_output=True, shell=True)
+
+    if result_diff.returncode != 0 or result_count.returncode != 0:
+        return None
+
+    result_diff = int(result_diff.stdout.decode('UTF-8').strip())
+    result_count = int(result_count.stdout.decode('UTF-8').strip())
+
+    # We define a first scoring methond ~= #of good files/#of files
+    score =  (result_count - result_diff)/result_count
+    return (result_diff, result_count, score)
+
 def cleanup(to_unmask: set[str], installation: str):
     for pattern in to_unmask:
         mask_package(pattern, installation, un_mask=True)
@@ -986,6 +1002,14 @@ def main():
 
         bin_reproducible = (original_bin_hash == rebuild_bin_hash)
         elf_reproducible = (original_elf_hash == rebuild_elf_hash)
+
+        repro_score = compute_repro_score(original_artifact, rebuild_artifact)
+        if repro_score is not None:
+            bad_files, total_files, repro_score = repro_score
+            statistics["bad_files"] = bad_files
+            statistics["total_files"] = total_files
+            statistics["repro_score"] = repro_score
+
 
         statistics["original_hash"] = original_hash
         statistics["rebuild_hash"] = rebuild_hash

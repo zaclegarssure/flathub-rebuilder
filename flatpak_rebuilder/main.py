@@ -69,13 +69,7 @@ def run_flatpak_command(
     if may_need_root and installation != "user":
         cmd.insert(0, "sudo")
 
-    match installation:
-        case "user":
-            cmd.append("--user")
-        case "system":
-            cmd.append("--system")
-        case _:
-            cmd.append("--installation=" + installation)
+    cmd.append(flatpak_installation_flag(installation))
 
     if arch:
         cmd.append("--arch=" + arch)
@@ -102,6 +96,15 @@ def run_flatpak_command(
             return result.stdout.decode("UTF-8")
         else:
             return ""
+
+def flatpak_installation_flag(installation: str) -> str:
+    match installation:
+        case "user":
+            return "--user"
+        case "system":
+            return "--system"
+        case _:
+            return "--installation=" + installation
 
 
 def parse_args() -> Namespace:
@@ -433,6 +436,9 @@ def rebuild(
     cmd = [
         "flatpak",
         "run",
+        # We need to put twice this flag, here and after the command because the first time it will
+        # be applied to the flatpak run command and later to org.flatpak.Builder
+        flatpak_installation_flag(installation),
         "org.flatpak.Builder",
         "--disable-cache",
         "--force-clean",
@@ -455,6 +461,7 @@ def rebuild(
     cmd = [
         "flatpak",
         "run",
+        flatpak_installation_flag(installation),
         "org.flatpak.Builder",
         "--disable-cache",
         "--force-clean",

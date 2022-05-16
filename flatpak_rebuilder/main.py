@@ -766,6 +766,18 @@ def compute_repro_score(original: str, rebuild: str) -> tuple[int, int, float] |
     score =  (result_count - result_diff)/result_count
     return (result_diff, result_count, score)
 
+def flatpak_ref_full_name(ref: str, arch: str, branch: str) -> str:
+    """Convert a ref into it's full name. It turns out 'package' and
+    'package/arch/branch' are both valid ids in certain context (for instance
+    the sdk in the manifest), this function automatically converts it into the
+    full form a/b/c if needed.
+    """
+    splited = ref.split('/')
+    if len(splited) >= 3:
+        return ref
+    else:
+        return f"{ref}/{arch}/{branch}"
+
 def cleanup(to_unmask: set[str], installation: str):
     for pattern in to_unmask:
         mask_package(pattern, installation, un_mask=True)
@@ -883,6 +895,22 @@ def main():
             repo = Repo.clone_from(git_url, path, branch="beta")
         else:
             repo = Repo.clone_from(git_url, path)
+            # Okay this part sucks, but the default branch isn't always the right one
+            # we therefore need to be careful (e.g ar.xjuan.Cambalache)
+            remote_refs = repo.remote().refs
+            remotes_name = [ref.name.split('/')[1] for ref in remote_refs]
+            # In case we want a specific flathub branch, it generally means this branch will
+            # also exist with the same name on github
+            if branch in remotes_name:
+                print(branch)
+                ref = remote_refs[remotes_name.index(branch)]
+                ref.checkout()
+            else:
+                if "master" in remotes_name:
+                    print("MASTER")
+                    ref = remote_refs[remotes_name.index("master")]
+                    ref.checkout()
+                # Otherwise we just use the default branch and hope it is the right one
         if commit:
             for c in repo.iter_commits():
                 if c.committed_datetime < build_time:
@@ -945,7 +973,7 @@ def main():
             root=(installation != "user"),
         )
 
-        sdk_full_name = f"{manifest['sdk']}/{arch}/{manifest['runtime-version']}"
+        sdk_full_name = flatpak_ref_full_name(manifest['sdk'],arch,manifest['runtime-version'])
         pin_package_version(
             sdk_full_name,
             manifest["sdk-commit"],
@@ -955,7 +983,7 @@ def main():
         )
         to_unmask.add(sdk_full_name)
 
-        runtime_full_name = f"{manifest['runtime']}/{arch}/{manifest['runtime-version']}" 
+        runtime_full_name = flatpak_ref_full_name(manifest['runtime'],arch,manifest['runtime-version'])
         # A bit overkill but that ensures everything is the same
         pin_package_version(
             runtime_full_name,

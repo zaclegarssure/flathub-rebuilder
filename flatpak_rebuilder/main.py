@@ -902,12 +902,10 @@ def main():
             # In case we want a specific flathub branch, it generally means this branch will
             # also exist with the same name on github
             if branch in remotes_name:
-                print(branch)
                 ref = remote_refs[remotes_name.index(branch)]
                 ref.checkout()
             else:
                 if "master" in remotes_name:
-                    print("MASTER")
                     ref = remote_refs[remotes_name.index("master")]
                     ref.checkout()
                 # Otherwise we just use the default branch and hope it is the right one

@@ -268,7 +268,7 @@ def installation_path(name: str) -> str:
 
 
 def pin_package_version(
-        package: str, commit: str, installation: str, interactive: bool, mask: bool
+        package: str, commit: str, installation: str, interactive: bool, mask: bool = False
 ):
     """Fix a locally installed flatpak to the specified commit.
 
@@ -285,12 +285,15 @@ def pin_package_version(
     mask: bool
         If true will mask the package to avoid further update.
     """
-    cmd = ["flatpak", "update", package, "--commit=" + commit]
+    cmd = ["flatpak", "update", package, "--commit=" + commit, "--no-deps"]
     if not interactive:
         cmd.append("--noninteractive")
 
     run_flatpak_command(cmd, installation, may_need_root=True)
 
+    # Masking seems to produce weird results, even thougth we remove every
+    # patterns at the end I noticed that some packages couldn't be updated
+    # anymore.
     if mask:
         mask_package(package, installation)
 
@@ -628,9 +631,11 @@ def run_diffoscope(
     return subprocess.run(cmd).returncode
 
 
-def flatpak_uninstall(package: str, installation: str, interactive: bool, arch: str):
+def flatpak_uninstall(package: str, installation: str, interactive: bool, arch: str, force: bool = False):
     """uninstall a locally installed flatpak."""
     cmd = ["flatpak", "uninstall", package]
+    if force:
+        cmd.append("--force-remove")
     run_flatpak_command(cmd, installation, interactive=interactive, arch=arch)
 
 
@@ -778,9 +783,26 @@ def flatpak_ref_full_name(ref: str, arch: str, branch: str) -> str:
     else:
         return f"{ref}/{arch}/{branch}"
 
-def cleanup(to_unmask: set[str], installation: str):
-    for pattern in to_unmask:
-        mask_package(pattern, installation, un_mask=True)
+def assert_program_version(remote:str, package: str, installation: str, expected_commit: str, arch: str, try_to_solve: bool = False) -> bool:
+    """Assert that the active commit of a local package is expected_commit.
+    If try_to_solve is True, it will try to force the program to be at the expected_commit.
+    """
+    infos = flatpak_info(installation, package)
+    commit = infos.get('Commit')
+    if commit:
+        is_same = commit == expected_commit
+    else:
+        # Risky route, if there is an active and latest commit, this probably mean something weird happened.
+        active_commit = infos.get('Active commit')
+        is_same = active_commit == expected_commit
+
+    if not is_same and try_to_solve:
+        flatpak_uninstall(package, installation, interactive=False, arch=arch, force=True)
+        flatpak_install(remote, package, installation, interractive=False, arch=arch)
+        pin_package_version(package, expected_commit, installation, interactive=False)
+        return assert_program_version(remote, package, installation, expected_commit, arch, try_to_solve=False)
+    else:
+        return is_same
 
 
 def main():
@@ -855,226 +877,229 @@ def main():
     full_package_id = f"{package}/{arch}/{branch}"
     flatpak_install(remote, full_package_id, installation, interactive, arch, or_update=True)
 
-    to_unmask = set()
 
-    try:
-        if commit:
-            pin_package_version(full_package_id, commit, installation, interactive, mask=True)
-            to_unmask.add(full_package_id)
+    if commit:
+        pin_package_version(full_package_id, commit, installation, interactive)
 
-        metadatas = flatpak_info(installation, full_package_id)
+    metadatas = flatpak_info(installation, full_package_id)
 
-        # Sanity check
-        assert metadatas['Branch'] == branch
-        if commit:
-            assert metadatas['Commit'] == commit
+    # Sanity check
+    assert metadatas['Branch'] == branch
+    if commit:
+        assert metadatas['Commit'] == commit
 
-        statistics['commit'] = metadatas['Commit']
-        statistics['branch'] = branch
+    statistics['commit'] = metadatas['Commit']
+    statistics['branch'] = branch
 
-        original_path = flatpak_package_path(installation, full_package_id)
+    original_path = flatpak_package_path(installation, full_package_id)
 
-        if time:
-            build_time = flatpak_date_to_datetime(time)
-        elif args.estimate_time:
-            build_time_estimate = flatpak_date_to_datetime(metadatas["Date"])
-            build_time = find_closest_time(original_path, build_time_estimate)
+    if time:
+        build_time = flatpak_date_to_datetime(time)
+    elif args.estimate_time:
+        build_time_estimate = flatpak_date_to_datetime(metadatas["Date"])
+        build_time = find_closest_time(original_path, build_time_estimate)
+    else:
+        build_time = flatpak_date_to_datetime(metadatas["Date"])
+
+    build_timestamp = build_time.timestamp()
+
+    statistics['time_of_rebuild'] = str(build_time)
+    statistics['timestamp_of_rebuild'] = build_timestamp
+
+    # Init the build directory
+    dir = package_path_name
+    os.mkdir(dir)
+    path = f"{os.curdir}/{dir}"
+    if beta:
+        repo = Repo.clone_from(git_url, path, branch="beta")
+    else:
+        repo = Repo.clone_from(git_url, path)
+        # Okay this part sucks, but the default branch isn't always the right one
+        # we therefore need to be careful (e.g ar.xjuan.Cambalache)
+        remote_refs = repo.remote().refs
+        remotes_name = [ref.name.split('/')[1] for ref in remote_refs]
+        # In case we want a specific flathub branch, it generally means this branch will
+        # also exist with the same name on github
+        if branch in remotes_name:
+            ref = remote_refs[remotes_name.index(branch)]
+            ref.checkout()
         else:
-            build_time = flatpak_date_to_datetime(metadatas["Date"])
-
-        build_timestamp = build_time.timestamp()
-
-        statistics['time_of_rebuild'] = str(build_time)
-        statistics['timestamp_of_rebuild'] = build_timestamp
-
-        # Init the build directory
-        dir = package_path_name
-        os.mkdir(dir)
-        path = f"{os.curdir}/{dir}"
-        if beta:
-            repo = Repo.clone_from(git_url, path, branch="beta")
-        else:
-            repo = Repo.clone_from(git_url, path)
-            # Okay this part sucks, but the default branch isn't always the right one
-            # we therefore need to be careful (e.g ar.xjuan.Cambalache)
-            remote_refs = repo.remote().refs
-            remotes_name = [ref.name.split('/')[1] for ref in remote_refs]
-            # In case we want a specific flathub branch, it generally means this branch will
-            # also exist with the same name on github
-            if branch in remotes_name:
-                ref = remote_refs[remotes_name.index(branch)]
+            if "master" in remotes_name:
+                ref = remote_refs[remotes_name.index("master")]
                 ref.checkout()
-            else:
-                if "master" in remotes_name:
-                    ref = remote_refs[remotes_name.index("master")]
-                    ref.checkout()
-                # Otherwise we just use the default branch and hope it is the right one
-        if commit:
-            for c in repo.iter_commits():
-                if c.committed_datetime < build_time:
-                    repo.git.checkout(c)
-                    break
-        repo.submodule_update()
+            # Otherwise we just use the default branch and hope it is the right one
+    if commit:
+        for c in repo.iter_commits():
+            if c.committed_datetime < build_time:
+                repo.git.checkout(c)
+                break
+    repo.submodule_update()
 
 
-        flatpak_install("flathub", FLATPAK_BUILDER, installation, interactive, arch)
+    flatpak_install("flathub", FLATPAK_BUILDER, installation, interactive, arch)
 
-        manifest_path = f"{original_path}/files/manifest.json"
-        with open(manifest_path, mode="r") as manifest:
-            manifest_content = manifest.read()
-            manifest = parse_manifest(manifest_content)
+    manifest_path = f"{original_path}/files/manifest.json"
+    with open(manifest_path, mode="r") as manifest:
+        manifest_content = manifest.read()
+        manifest = parse_manifest(manifest_content)
 
-        sdk_extensions = flatpak_install_deps(remote, installation, arch, manifest_path)
+    sdk_extensions = flatpak_install_deps(remote, installation, arch, manifest_path)
 
-        # shutil.copy(manifest_path, path)
-        ostree_init("repo", mode="archive-z2", path=path)
+    # shutil.copy(manifest_path, path)
+    ostree_init("repo", mode="archive-z2", path=path)
 
-        # Change time of manifests files
-        for root, _, files in os.walk(path):
-            for file in files:
-                # Try to only touch manifest files
-                if file.endswith(".json") or file.endswith(".yml"):
-                    os.utime(os.path.join(root, file), (build_timestamp, build_timestamp))
+    # Change time of manifests files
+    for root, _, files in os.walk(path):
+        for file in files:
+            # Try to only touch manifest files
+            if file.endswith(".json") or file.endswith(".yml"):
+                os.utime(os.path.join(root, file), (build_timestamp, build_timestamp))
 
-        original_artifact = package_path_name + ".original"
-        rebuild_artifact = package_path_name + ".rebuild"
-        report = package_path_name + ".report.html"
+    original_artifact = package_path_name + ".original"
+    rebuild_artifact = package_path_name + ".rebuild"
+    report = package_path_name + ".report.html"
 
-        base_app = manifest.get("base")
-        if base_app != None:
-            full_name = f"{base_app}/{arch}/{manifest['base-version']}"
-            flatpak_install(remote, full_name, installation, interactive, arch)
-            base_app_commit = find_flatpak_commit_for_date(
-                remote, installation, full_name, build_time
-            )
-            pin_package_version(full_name, base_app_commit, installation, interactive, mask=True)
-            to_unmask.add(full_name)
-
-        for sdk_extension in sdk_extensions:
-            extension_commit = find_flatpak_commit_for_date(
-                remote, installation, sdk_extension, build_time
-            )
-            pin_package_version(sdk_extension, extension_commit, installation, interactive, mask=True)
-            to_unmask.add(sdk_extension)
-
-        builder_commit = find_flatpak_commit_for_date(
-            remote, installation, FLATPAK_BUILDER, build_time
+    base_app = manifest.get("base")
+    base_app_got_well_downgraded = True
+    if base_app != None:
+        full_name = f"{base_app}/{arch}/{manifest['base-version']}"
+        flatpak_install(remote, full_name, installation, interactive, arch)
+        base_app_commit = find_flatpak_commit_for_date(
+            remote, installation, full_name, build_time
         )
-        pin_package_version(FLATPAK_BUILDER, builder_commit, installation, interactive, mask=True)
-        to_unmask.add(FLATPAK_BUILDER)
+        pin_package_version(full_name, base_app_commit, installation, interactive)
+        base_app_got_well_downgraded = assert_program_version(remote, full_name, installation, base_app_commit, arch, try_to_solve=True)
 
-        install_path = installation_path(installation)
-        ostree_checkout(
-            f"{install_path}/repo",
-            metadatas["Ref"],
-            original_artifact,
-            root=(installation != "user"),
+    sdk_got_well_downgraded = list()
+    for sdk_extension in sdk_extensions:
+        extension_commit = find_flatpak_commit_for_date(
+            remote, installation, sdk_extension, build_time
         )
+        pin_package_version(sdk_extension, extension_commit, installation, interactive)
+        sdk_got_well_downgraded.append(assert_program_version(remote, sdk_extension, installation, extension_commit, arch, try_to_solve=True))
 
-        sdk_full_name = flatpak_ref_full_name(manifest['sdk'],arch,manifest['runtime-version'])
-        pin_package_version(
-            sdk_full_name,
-            manifest["sdk-commit"],
-            installation,
-            interactive,
-            mask=True
-        )
-        to_unmask.add(sdk_full_name)
+    builder_commit = find_flatpak_commit_for_date(
+        remote, installation, FLATPAK_BUILDER, build_time
+    )
+    pin_package_version(FLATPAK_BUILDER, builder_commit, installation, interactive)
 
-        runtime_full_name = flatpak_ref_full_name(manifest['runtime'],arch,manifest['runtime-version'])
-        # A bit overkill but that ensures everything is the same
-        pin_package_version(
-            runtime_full_name,
-            manifest["runtime-commit"],
-            installation,
-            interactive,
-            mask=True
-        )
-        to_unmask.add(runtime_full_name)
+    install_path = installation_path(installation)
+    ostree_checkout(
+        f"{install_path}/repo",
+        metadatas["Ref"],
+        original_artifact,
+        root=(installation != "user"),
+    )
 
-        try:
-            build_stats = rebuild(
-                path, installation, package, metadatas["Branch"], arch, install=False
-            )
-            statistics.update(build_stats)
-        except:
-            statistics = json.dumps(statistics, indent=4)
-            with open(f"{path}/{package_path_name}.stats.json", "w") as f:
-                f.write(statistics)
-            shutil.move(original_artifact, f"{path}/{original_artifact}")
-            raise
+    sdk_full_name = flatpak_ref_full_name(manifest['sdk'],arch,manifest['runtime-version'])
+    print(manifest['sdk-commit'])
+    pin_package_version(
+        sdk_full_name,
+        manifest["sdk-commit"],
+        installation,
+        interactive
+    )
 
-        statistics["build_sucess"] = True
+    runtime_full_name = flatpak_ref_full_name(manifest['runtime'],arch,manifest['runtime-version'])
+    # A bit overkill but that ensures everything is the same
+    pin_package_version(
+        runtime_full_name,
+        manifest["runtime-commit"],
+        installation,
+        interactive
+    )
 
-        generate_deltas(path, "repo")
-
-        ostree_checkout(
-            f"{path}/repo",
-            metadatas["Ref"],
-            rebuild_artifact,
-            root=(installation != "user"),
-        )
-
-        # Clean up
-        flatpak_uninstall(full_package_id, installation, interactive, arch)
-        cleanup(to_unmask, installation)
-        to_unmask = set()
-
-        # Unfortunatly, diffoscope sometimes crash, we therefore need to rely
-        # on a more traditional diffing method.
-        diffoscope_result = run_diffoscope(original_artifact, rebuild_artifact, report)
-        original_hash = compute_folder_hash(original_artifact)
-        rebuild_hash = compute_folder_hash(rebuild_artifact)
-        reproducible = original_hash == rebuild_hash
-
-        original_bin_hash = compute_folder_bin_hash(original_artifact)
-        rebuild_bin_hash = compute_folder_bin_hash(rebuild_artifact)
-
-        original_elf_hash = compute_folder_elf_hash(original_artifact)
-        rebuild_elf_hash = compute_folder_elf_hash(rebuild_artifact)
-
-        bin_reproducible = (original_bin_hash == rebuild_bin_hash)
-        elf_reproducible = (original_elf_hash == rebuild_elf_hash)
-
-        repro_score = compute_repro_score(original_artifact, rebuild_artifact)
-        if repro_score is not None:
-            bad_files, total_files, repro_score = repro_score
-            statistics["bad_files"] = bad_files
-            statistics["total_files"] = total_files
-            statistics["repro_score"] = repro_score
-
-
-        statistics["original_hash"] = original_hash
-        statistics["rebuild_hash"] = rebuild_hash
-        statistics["original_bin_hash"] = original_bin_hash
-        statistics["rebuild_bin_hash"] = rebuild_bin_hash
-        statistics["original_elf_hash"] = original_elf_hash
-        statistics["rebuild_elf_hash"] = rebuild_elf_hash
-
-        statistics["is_reproducible"] = reproducible
-        statistics["is_bin_reproducible"] = bin_reproducible
-        statistics["is_elf_reproducible"] = elf_reproducible
-
-        # Make sure we only leave one directory
-        shutil.move(original_artifact, f"{path}/{original_artifact}")
-        shutil.move(rebuild_artifact, f"{path}/{rebuild_artifact}")
-
-        # Report is only created when build is not reproducible
-        if diffoscope_result != 0:
-            # Sometimes diffoscope fails, cool
-            if os.path.exists(report):
-                shutil.move(report, f"{path}/{report}")
-            else:
-                statistics["diffoscope_failed"] = True
-
+    # Make sure we downgraded things correctly (as you can guess this was not always the case hence the check)
+    if not (
+            assert_program_version(remote, sdk_full_name, installation, manifest["sdk-commit"], arch, try_to_solve=True) and
+            assert_program_version(remote, runtime_full_name, installation, manifest["runtime-commit"], arch, try_to_solve=True) and
+            assert_program_version(remote, FLATPAK_BUILDER, installation, builder_commit, arch, try_to_solve=True) and
+            (not False in sdk_got_well_downgraded) and
+            base_app_got_well_downgraded
+        ):
+        statistics['wrong_deps_detected'] = True
         statistics = json.dumps(statistics, indent=4)
         with open(f"{path}/{package_path_name}.stats.json", "w") as f:
             f.write(statistics)
+        shutil.move(original_artifact, f"{path}/{original_artifact}")
+        raise Exception()
 
+    try:
+        build_stats = rebuild(
+            path, installation, package, metadatas["Branch"], arch, install=False
+        )
+        statistics.update(build_stats)
     except:
-        cleanup(to_unmask, installation)
-        to_unmask = set()
+        statistics = json.dumps(statistics, indent=4)
+        with open(f"{path}/{package_path_name}.stats.json", "w") as f:
+            f.write(statistics)
+        shutil.move(original_artifact, f"{path}/{original_artifact}")
         raise
+
+    statistics["build_sucess"] = True
+
+    generate_deltas(path, "repo")
+
+    ostree_checkout(
+        f"{path}/repo",
+        metadatas["Ref"],
+        rebuild_artifact,
+        root=(installation != "user"),
+    )
+
+    # Clean up
+    flatpak_uninstall(full_package_id, installation, interactive, arch)
+
+    # Unfortunatly, diffoscope sometimes crash, we therefore need to rely
+    # on a more traditional diffing method.
+    diffoscope_result = run_diffoscope(original_artifact, rebuild_artifact, report)
+    original_hash = compute_folder_hash(original_artifact)
+    rebuild_hash = compute_folder_hash(rebuild_artifact)
+    reproducible = original_hash == rebuild_hash
+
+    original_bin_hash = compute_folder_bin_hash(original_artifact)
+    rebuild_bin_hash = compute_folder_bin_hash(rebuild_artifact)
+
+    original_elf_hash = compute_folder_elf_hash(original_artifact)
+    rebuild_elf_hash = compute_folder_elf_hash(rebuild_artifact)
+
+    bin_reproducible = (original_bin_hash == rebuild_bin_hash)
+    elf_reproducible = (original_elf_hash == rebuild_elf_hash)
+
+    repro_score = compute_repro_score(original_artifact, rebuild_artifact)
+    if repro_score is not None:
+        bad_files, total_files, repro_score = repro_score
+        statistics["bad_files"] = bad_files
+        statistics["total_files"] = total_files
+        statistics["repro_score"] = repro_score
+
+
+    statistics["original_hash"] = original_hash
+    statistics["rebuild_hash"] = rebuild_hash
+    statistics["original_bin_hash"] = original_bin_hash
+    statistics["rebuild_bin_hash"] = rebuild_bin_hash
+    statistics["original_elf_hash"] = original_elf_hash
+    statistics["rebuild_elf_hash"] = rebuild_elf_hash
+
+    statistics["is_reproducible"] = reproducible
+    statistics["is_bin_reproducible"] = bin_reproducible
+    statistics["is_elf_reproducible"] = elf_reproducible
+
+    # Make sure we only leave one directory
+    shutil.move(original_artifact, f"{path}/{original_artifact}")
+    shutil.move(rebuild_artifact, f"{path}/{rebuild_artifact}")
+
+    # Report is only created when build is not reproducible
+    if diffoscope_result != 0:
+        # Sometimes diffoscope fails, cool
+        if os.path.exists(report):
+            shutil.move(report, f"{path}/{report}")
+        else:
+            statistics["diffoscope_failed"] = True
+
+    statistics = json.dumps(statistics, indent=4)
+    with open(f"{path}/{package_path_name}.stats.json", "w") as f:
+        f.write(statistics)
 
     sys.exit(not reproducible)
 

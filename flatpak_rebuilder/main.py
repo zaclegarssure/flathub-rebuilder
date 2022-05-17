@@ -207,6 +207,7 @@ def flatpak_install(
     interractive: bool,
     arch: str,
     or_update: bool = False,
+    no_deps: bool = False
 ):
     """Install a flatpak
 
@@ -230,6 +231,8 @@ def flatpak_install(
         cmd.append("--noninteractive")
     if or_update:
         cmd.append("--or-update")
+    if no_deps:
+        cmd.append("--no-deps")
     run_flatpak_command(cmd, installation, arch=arch)
 
 
@@ -798,7 +801,7 @@ def assert_program_version(remote:str, package: str, installation: str, expected
 
     if not is_same and try_to_solve:
         flatpak_uninstall(package, installation, interactive=False, arch=arch, force=True)
-        flatpak_install(remote, package, installation, interractive=False, arch=arch)
+        flatpak_install(remote, package, installation, interractive=False, arch=arch, no_deps=True)
         pin_package_version(package, expected_commit, installation, interactive=False)
         return assert_program_version(remote, package, installation, expected_commit, arch, try_to_solve=False)
     else:

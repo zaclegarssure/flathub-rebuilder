@@ -923,16 +923,17 @@ def main():
         # Okay this part sucks, but the default branch isn't always the right one
         # we therefore need to be careful (e.g ar.xjuan.Cambalache)
         remote_refs = repo.remote().refs
-        remotes_name = [ref.name.split('/')[1] for ref in remote_refs]
         # In case we want a specific flathub branch, it generally means this branch will
-        # also exist with the same name on github
-        if branch in remotes_name:
-            ref = remote_refs[remotes_name.index(branch)]
-            ref.checkout()
+        # also exist with the same name or at least will end with the same name.
+        possible_ones = [ref for ref in remote_refs if ref.name.endswith(branch)]
+        if len(possible_ones) > 0:
+            git_ref = possible_ones[0]
+            git_ref.checkout()
         else:
-            if "master" in remotes_name:
-                ref = remote_refs[remotes_name.index("master")]
-                ref.checkout()
+            possible_ones = [ref for ref in remote_refs if ref.name.endswith("master")]
+            if len(possible_ones) > 0:
+                git_ref = possible_ones[0]
+                git_ref.checkout()
             # Otherwise we just use the default branch and hope it is the right one
 
     # Last commit isn't always the one corresponding to what's on flathub
@@ -942,6 +943,7 @@ def main():
         if c.committed_datetime < build_time:
             print(f"Has chosen git commit {c.name_rev}")
             repo.git.checkout(c)
+            statistics['git-commit'] = c.name_rev
             break
     repo.submodule_update()
 

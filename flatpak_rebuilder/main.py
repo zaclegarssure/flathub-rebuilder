@@ -934,11 +934,15 @@ def main():
                 ref = remote_refs[remotes_name.index("master")]
                 ref.checkout()
             # Otherwise we just use the default branch and hope it is the right one
-    if commit:
-        for c in repo.iter_commits():
-            if c.committed_datetime < build_time:
-                repo.git.checkout(c)
-                break
+
+    # Last commit isn't always the one corresponding to what's on flathub
+    # In particular some people merge things that don't even build on master (or the build fail but they don't try it again)
+    # thanks.........................................
+    for c in repo.iter_commits():
+        if c.committed_datetime < build_time:
+            print(f"Has chosen git commit {c.name_rev}")
+            repo.git.checkout(c)
+            break
     repo.submodule_update()
 
     # Keep track of flatpak deps hashes (runtime, sdk, sdk-extension and base app)

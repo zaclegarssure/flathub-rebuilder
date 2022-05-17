@@ -697,7 +697,7 @@ def generate_deltas(repo_dir: str, repo: str):
 
 
 def flatpak_install_deps(
-    remote: str, installation: str, arch: str, manifest_path: str
+        remote: str, installation: str, arch: str, manifest_path: str, beta_remote: str | None = None
 ) -> list[str]:
     """Install the needed flatpak deps (runtime, sdk, skd-extension, etc.) specified in the manifest.
     It appears that flatpak-builder is capable of figuring out which branch should be used when fetching
@@ -712,6 +712,9 @@ def flatpak_install_deps(
         "--install-deps-from=" + remote,
         "--install-deps-only",
     ]
+    if beta_remote:
+        cmd.append("--install-deps-from=" + beta_remote)
+
     output = run_flatpak_command(cmd, installation, arch=arch, capture_output=True)
     result = list()
     for line in output.split("\n"):
@@ -786,7 +789,7 @@ def flatpak_ref_full_name(ref: str, arch: str, branch: str) -> str:
     else:
         return f"{ref}/{arch}/{branch}"
 
-def assert_program_version(remote:str, package: str, installation: str, expected_commit: str, arch: str, try_to_solve: bool = False) -> bool:
+def check_program_version(remote:str, package: str, installation: str, expected_commit: str, arch: str, try_to_solve: bool = False) -> bool:
     """Assert that the active commit of a local package is expected_commit.
     If try_to_solve is True, it will try to force the program to be at the expected_commit.
     """
@@ -803,7 +806,7 @@ def assert_program_version(remote:str, package: str, installation: str, expected
         flatpak_uninstall(package, installation, interactive=False, arch=arch, force=True)
         flatpak_install(remote, package, installation, interractive=False, arch=arch, no_deps=True)
         pin_package_version(package, expected_commit, installation, interactive=False)
-        return assert_program_version(remote, package, installation, expected_commit, arch, try_to_solve=False)
+        return check_program_version(remote, package, installation, expected_commit, arch, try_to_solve=False)
     else:
         return is_same
 
@@ -860,7 +863,7 @@ def main():
         installation,
         "https://flathub.org/beta-repo/flathub-beta.flatpakrepo",
     )
-    
+
     if arch is None:
         arch = get_default_arch()
     elif not is_arch_available(arch):
@@ -938,17 +941,19 @@ def main():
                 break
     repo.submodule_update()
 
+    # Keep track of flatpak deps hashes (runtime, sdk, sdk-extension and base app)
+    statistics["flatpak-deps"] = dict()
 
-    flatpak_install("flathub", FLATPAK_BUILDER, installation, interactive, arch)
+    full_builder_name = f"{FLATPAK_BUILDER}/{arch}/stable"
+    flatpak_install("flathub", full_builder_name, installation, interactive, arch)
 
     manifest_path = f"{original_path}/files/manifest.json"
     with open(manifest_path, mode="r") as manifest:
         manifest_content = manifest.read()
         manifest = parse_manifest(manifest_content)
 
-    sdk_extensions = flatpak_install_deps(remote, installation, arch, manifest_path)
+    sdk_extensions = flatpak_install_deps("flathub", installation, arch, manifest_path, remote)
 
-    # shutil.copy(manifest_path, path)
     ostree_init("repo", mode="archive-z2", path=path)
 
     # Change time of manifests files
@@ -971,7 +976,8 @@ def main():
             remote, installation, full_name, build_time
         )
         pin_package_version(full_name, base_app_commit, installation, interactive)
-        base_app_got_well_downgraded = assert_program_version(remote, full_name, installation, base_app_commit, arch, try_to_solve=True)
+        base_app_got_well_downgraded = check_program_version(remote, full_name, installation, base_app_commit, arch, try_to_solve=True)
+        statistics['flatpak-deps'][full_name] = base_app_commit
 
     sdk_got_well_downgraded = list()
     for sdk_extension in sdk_extensions:
@@ -979,12 +985,14 @@ def main():
             remote, installation, sdk_extension, build_time
         )
         pin_package_version(sdk_extension, extension_commit, installation, interactive)
-        sdk_got_well_downgraded.append(assert_program_version(remote, sdk_extension, installation, extension_commit, arch, try_to_solve=True))
+        sdk_got_well_downgraded.append(check_program_version(remote, sdk_extension, installation, extension_commit, arch, try_to_solve=True))
+        statistics['flatpak-deps'][sdk_extension] = extension_commit
 
     builder_commit = find_flatpak_commit_for_date(
-        remote, installation, FLATPAK_BUILDER, build_time
+        remote, installation, full_builder_name, build_time
     )
-    pin_package_version(FLATPAK_BUILDER, builder_commit, installation, interactive)
+    pin_package_version(full_builder_name, builder_commit, installation, interactive)
+    statistics['flatpak-deps'][full_builder_name] = builder_commit
 
     install_path = installation_path(installation)
     ostree_checkout(
@@ -995,28 +1003,33 @@ def main():
     )
 
     sdk_full_name = flatpak_ref_full_name(manifest['sdk'],arch,manifest['runtime-version'])
-    print(manifest['sdk-commit'])
+    sdk_commit = manifest['sdk-commit']
     pin_package_version(
         sdk_full_name,
-        manifest["sdk-commit"],
+        sdk_commit,
         installation,
         interactive
     )
 
+    statistics['flatpak-deps'][sdk_full_name] = sdk_commit
+
     runtime_full_name = flatpak_ref_full_name(manifest['runtime'],arch,manifest['runtime-version'])
+    runtime_commit = manifest['runtime-commit']
     # A bit overkill but that ensures everything is the same
     pin_package_version(
         runtime_full_name,
-        manifest["runtime-commit"],
+        runtime_commit,
         installation,
         interactive
     )
 
+    statistics['flatpak-deps'][runtime_full_name] = runtime_commit
+
     # Make sure we downgraded things correctly (as you can guess this was not always the case hence the check)
     if not (
-            assert_program_version(remote, sdk_full_name, installation, manifest["sdk-commit"], arch, try_to_solve=True) and
-            assert_program_version(remote, runtime_full_name, installation, manifest["runtime-commit"], arch, try_to_solve=True) and
-            assert_program_version(remote, FLATPAK_BUILDER, installation, builder_commit, arch, try_to_solve=True) and
+            check_program_version(remote, sdk_full_name, installation, manifest["sdk-commit"], arch, try_to_solve=True) and
+            check_program_version(remote, runtime_full_name, installation, manifest["runtime-commit"], arch, try_to_solve=True) and
+            check_program_version(remote, FLATPAK_BUILDER, installation, builder_commit, arch, try_to_solve=True) and
             (not False in sdk_got_well_downgraded) and
             base_app_got_well_downgraded
         ):

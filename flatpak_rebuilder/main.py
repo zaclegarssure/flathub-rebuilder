@@ -15,12 +15,15 @@ import sys
 
 FLATPAK_BUILDER = "org.flatpak.Builder"
 
+
 class GitNotFoundException(Exception):
     pass
+
 
 class FlatpakCmdException(Exception):
     def __init__(self, cmd: list[str], msg: str = ""):
         super().__init__(f"Failed to run {cmd}, with the following error: {msg}")
+
 
 def run_flatpak_command(
     cmd: list[str],
@@ -78,7 +81,9 @@ def run_flatpak_command(
         cmd.append("--noninteractive")
 
     if include_stderr:
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd)
+        result = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd
+        )
     elif capture_output:
         result = subprocess.run(cmd, capture_output=True, cwd=cwd)
     else:
@@ -96,6 +101,7 @@ def run_flatpak_command(
             return result.stdout.decode("UTF-8")
         else:
             return ""
+
 
 def flatpak_installation_flag(installation: str) -> str:
     match installation:
@@ -130,9 +136,7 @@ def parse_args() -> Namespace:
         "--arch",
         help="Cpu architeture to use for the build, by default will use the one available on the system.",
     )
-    parser.add_argument(
-        "--branch", help="Specify which branch of the flatpak to use."
-    )
+    parser.add_argument("--branch", help="Specify which branch of the flatpak to use.")
     parser.add_argument(
         "--estimate-time",
         help="Let flatpak rebuilder find a time estimate of the build by scraping binaries.",
@@ -176,18 +180,26 @@ def flatpak_info(installation: str, package: str) -> dict[str, str]:
     output = run_flatpak_command(cmd, installation, capture_output=True)
     return cmd_output_to_dict(output)
 
-def get_available_branches(remote: str, installation: str, package: str, arch: str) -> list[str]:
-    """Returns all the available branches of a package id in remote
-    """
+
+def get_available_branches(
+    remote: str, installation: str, package: str, arch: str
+) -> list[str]:
+    """Returns all the available branches of a package id in remote"""
     cmd = ["flatpak", "remote-info", remote, package, f"--arch={arch}"]
-    output = run_flatpak_command(cmd, installation, check_returncode=False, include_stderr=True)
+    output = run_flatpak_command(
+        cmd, installation, check_returncode=False, include_stderr=True
+    )
     # If the command fail, the output will contain the list of possible branches
     if "Multiple branches available" in output:
-        branches = map(lambda s: s.strip().split('/')[-1],reversed(output.split(':')[2].split(",")))
+        branches = map(
+            lambda s: s.strip().split("/")[-1],
+            reversed(output.split(":")[2].split(",")),
+        )
         return list(branches)
     else:
         metadatas = cmd_output_to_dict(output)
-        return [ metadatas['Branch'] ]
+        return [metadatas["Branch"]]
+
 
 def cmd_output_to_dict(output: str) -> dict[str, str]:
     """Format commands with output of the form 'key : value' into a dictionary"""
@@ -207,7 +219,7 @@ def flatpak_install(
     interractive: bool,
     arch: str,
     or_update: bool = False,
-    no_deps: bool = False
+    no_deps: bool = False,
 ):
     """Install a flatpak
 
@@ -271,7 +283,7 @@ def installation_path(name: str) -> str:
 
 
 def pin_package_version(
-        package: str, commit: str, installation: str, interactive: bool, mask: bool = False
+    package: str, commit: str, installation: str, interactive: bool, mask: bool = False
 ):
     """Fix a locally installed flatpak to the specified commit.
 
@@ -296,11 +308,13 @@ def pin_package_version(
 
     # Masking seems to produce weird results, even thougth we remove every
     # patterns at the end I noticed that some packages couldn't be updated
-    # anymore.
+    # anymore. I actually never achieve to reproduce this bug but I prefer
+    # the actual solution anyway.
     if mask:
         mask_package(package, installation)
 
-def mask_package(package: str, installation: str, un_mask = False):
+
+def mask_package(package: str, installation: str, un_mask=False):
     """Maks a locally installed flatpak to avoid include it in further updates.
 
     Parameters
@@ -634,7 +648,9 @@ def run_diffoscope(
     return subprocess.run(cmd).returncode
 
 
-def flatpak_uninstall(package: str, installation: str, interactive: bool, arch: str, force: bool = False):
+def flatpak_uninstall(
+    package: str, installation: str, interactive: bool, arch: str, force: bool = False
+):
     """uninstall a locally installed flatpak."""
     cmd = ["flatpak", "uninstall", package]
     if force:
@@ -697,11 +713,15 @@ def generate_deltas(repo_dir: str, repo: str):
 
 
 def flatpak_install_deps(
-        remote: str, installation: str, arch: str, manifest_path: str, beta_remote: str | None = None
+    remote: str,
+    installation: str,
+    arch: str,
+    manifest_path: str,
+    beta_remote: str | None = None,
 ) -> list[str]:
     """Install the needed flatpak deps (runtime, sdk, skd-extension, etc.) specified in the manifest.
-    It appears that flatpak-builder is capable of figuring out which branch should be used when fetching
-    an sdk-extension, we therefore parse the output of the command to isolate this information, it is returned as a list.
+    Since flatpak-builder does the parsing of the metadatas to figure out which branch to use for each extensions,
+    we return this information back to the caller.
     """
     cmd = [
         "flatpak",
@@ -716,13 +736,13 @@ def flatpak_install_deps(
         cmd.append("--install-deps-from=" + beta_remote)
 
     output = run_flatpak_command(cmd, installation, arch=arch, capture_output=True)
-    result = list()
+    extensions = list()
     for line in output.split("\n"):
         if line.startswith("Dependency Extension"):
             line = line.split(":")[1].split(" ")[1:]
-            result.append(f"{line[0]}/{arch}/{line[1]}")
+            extensions.append(f"{line[0]}/{arch}/{line[1]}")
 
-    return result
+    return extensions
 
 
 def compute_folder_hash(path: str) -> str | None:
@@ -732,34 +752,40 @@ def compute_folder_hash(path: str) -> str | None:
     # should be more robust (I hope).
     return dirhash(path, "sha1", followlinks=True)
 
+
 def compute_folder_bin_hash(path: str) -> str | None:
-    """ Computes the hash of a folder, while only considering non
+    """Computes the hash of a folder, while only considering non
     text files (images, archives, compiled programs, ...)
     """
     if not os.path.exists(path):
         return None
 
     # Forgive Me Father For I Have Sinned
-    cmd = f"find {path} -type f -exec grep --null -IL . {{}} \; | LC_ALL=C sort -z | xargs -0 sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"
+    cmd = f"""find {path} -type f -exec grep --null -IL . {{}} \; | LC_ALL=C sort -z
+    | xargs -0 sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"""
+
     result = subprocess.run(cmd, capture_output=True, shell=True)
 
     if result.returncode != 0:
         return None
     # Remove the last /n
-    return result.stdout.decode('UTF-8').strip()
+    return result.stdout.decode("UTF-8").strip()
+
 
 def compute_folder_elf_hash(path: str) -> str | None:
-    """ Computes the hash of a folder, while only considering elf files.
-    """
+    """Computes the hash of a folder, while only considering elf files."""
     if not os.path.exists(path):
         return None
 
-    cmd = f"find {path} -exec file {{}} \; | grep -i elf | cut -d: -f1 | xargs sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"
+    cmd = f"""find {path} -exec file {{}} \; | grep -i elf | cut -d: -f1 | LC_ALL=C sort -z
+    | xargs sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"""
+
     result = subprocess.run(cmd, capture_output=True, shell=True)
 
     if result.returncode != 0:
         return None
-    return result.stdout.decode('UTF-8').strip()
+    return result.stdout.decode("UTF-8").strip()
+
 
 def compute_repro_score(original: str, rebuild: str) -> tuple[int, int, float] | None:
     cmd = f"diff -rq {original} {rebuild} --no-dereference | wc -l"
@@ -770,12 +796,13 @@ def compute_repro_score(original: str, rebuild: str) -> tuple[int, int, float] |
     if result_diff.returncode != 0 or result_count.returncode != 0:
         return None
 
-    result_diff = int(result_diff.stdout.decode('UTF-8').strip())
-    result_count = int(result_count.stdout.decode('UTF-8').strip())
+    result_diff = int(result_diff.stdout.decode("UTF-8").strip())
+    result_count = int(result_count.stdout.decode("UTF-8").strip())
 
     # We define a first scoring methond ~= #of good files/#of files
-    score =  (result_count - result_diff)/result_count
+    score = (result_count - result_diff) / result_count
     return (result_diff, result_count, score)
+
 
 def flatpak_ref_full_name(ref: str, arch: str, branch: str) -> str:
     """Convert a ref into it's full name. It turns out 'package' and
@@ -783,30 +810,44 @@ def flatpak_ref_full_name(ref: str, arch: str, branch: str) -> str:
     the sdk in the manifest), this function automatically converts it into the
     full form a/b/c if needed.
     """
-    splited = ref.split('/')
+    splited = ref.split("/")
     if len(splited) >= 3:
         return ref
     else:
         return f"{ref}/{arch}/{branch}"
 
-def check_program_version(remote:str, package: str, installation: str, expected_commit: str, arch: str, try_to_solve: bool = False) -> bool:
+
+def check_program_version(
+    remote: str,
+    package: str,
+    installation: str,
+    expected_commit: str,
+    arch: str,
+    try_to_solve: bool = False,
+) -> bool:
     """Assert that the active commit of a local package is expected_commit.
     If try_to_solve is True, it will try to force the program to be at the expected_commit.
     """
     infos = flatpak_info(installation, package)
-    commit = infos.get('Commit')
+    commit = infos.get("Commit")
     if commit:
         is_same = commit == expected_commit
     else:
         # Risky route, if there is an active and latest commit, this probably mean something weird happened.
-        active_commit = infos.get('Active commit')
+        active_commit = infos.get("Active commit")
         is_same = active_commit == expected_commit
 
     if not is_same and try_to_solve:
-        flatpak_uninstall(package, installation, interactive=False, arch=arch, force=True)
-        flatpak_install(remote, package, installation, interractive=False, arch=arch, no_deps=True)
+        flatpak_uninstall(
+            package, installation, interactive=False, arch=arch, force=True
+        )
+        flatpak_install(
+            remote, package, installation, interractive=False, arch=arch, no_deps=True
+        )
         pin_package_version(package, expected_commit, installation, interactive=False)
-        return check_program_version(remote, package, installation, expected_commit, arch, try_to_solve=False)
+        return check_program_version(
+            remote, package, installation, expected_commit, arch, try_to_solve=False
+        )
     else:
         return is_same
 
@@ -873,16 +914,18 @@ def main():
 
     available_branches = get_available_branches(remote, installation, package, arch)
     if branch is not None and branch not in available_branches:
-        raise Exception(f"Cannot rebuild using branch: {branch}, because it does not exist.")
+        raise Exception(
+            f"Cannot rebuild using branch: {branch}, because it does not exist."
+        )
     if branch is None:
         branch = available_branches[0]
 
     git_url = get_additional_deps(remote, package)
 
-
     full_package_id = f"{package}/{arch}/{branch}"
-    flatpak_install(remote, full_package_id, installation, interactive, arch, or_update=True)
-
+    flatpak_install(
+        remote, full_package_id, installation, interactive, arch, or_update=True
+    )
 
     if commit:
         pin_package_version(full_package_id, commit, installation, interactive)
@@ -890,12 +933,12 @@ def main():
     metadatas = flatpak_info(installation, full_package_id)
 
     # Sanity check
-    assert metadatas['Branch'] == branch
+    assert metadatas["Branch"] == branch
     if commit:
-        assert metadatas['Commit'] == commit
+        assert metadatas["Commit"] == commit
 
-    statistics['commit'] = metadatas['Commit']
-    statistics['branch'] = branch
+    statistics["commit"] = metadatas["Commit"]
+    statistics["branch"] = branch
 
     original_path = flatpak_package_path(installation, full_package_id)
 
@@ -909,8 +952,8 @@ def main():
 
     build_timestamp = build_time.timestamp()
 
-    statistics['time_of_rebuild'] = str(build_time)
-    statistics['timestamp_of_rebuild'] = build_timestamp
+    statistics["time_of_rebuild"] = str(build_time)
+    statistics["timestamp_of_rebuild"] = build_timestamp
 
     # Init the build directory
     dir = package_path_name
@@ -938,12 +981,11 @@ def main():
 
     # Last commit isn't always the one corresponding to what's on flathub
     # In particular some people merge things that don't even build on master (or the build fail but they don't try it again)
-    # thanks.........................................
     for c in repo.iter_commits():
         if c.committed_datetime < build_time:
             print(f"Has chosen git commit {c.name_rev}")
             repo.git.checkout(c)
-            statistics['git-commit'] = c.name_rev
+            statistics["git-commit"] = c.name_rev
             break
     repo.submodule_update()
 
@@ -958,7 +1000,9 @@ def main():
         manifest_content = manifest.read()
         manifest = parse_manifest(manifest_content)
 
-    sdk_extensions = flatpak_install_deps("flathub", installation, arch, manifest_path, remote)
+    sdk_extensions = flatpak_install_deps(
+        "flathub", installation, arch, manifest_path, remote
+    )
 
     ostree_init("repo", mode="archive-z2", path=path)
 
@@ -976,14 +1020,45 @@ def main():
     base_app = manifest.get("base")
     base_app_got_well_downgraded = True
     if base_app != None:
-        full_name = f"{base_app}/{arch}/{manifest['base-version']}"
+        base_version = manifest["base-version"]
+        full_name = flatpak_ref_full_name(base_app, arch, base_version)
         flatpak_install(remote, full_name, installation, interactive, arch)
         base_app_commit = find_flatpak_commit_for_date(
             remote, installation, full_name, build_time
         )
         pin_package_version(full_name, base_app_commit, installation, interactive)
-        base_app_got_well_downgraded = check_program_version(remote, full_name, installation, base_app_commit, arch, try_to_solve=True)
-        statistics['flatpak-deps'][full_name] = base_app_commit
+        base_app_got_well_downgraded = check_program_version(
+            remote, full_name, installation, base_app_commit, arch, try_to_solve=True
+        )
+        statistics["flatpak-deps"][full_name] = base_app_commit
+        base_extensions = manifest.get("base-extensions")
+        if base_extensions:
+            for extension in base_extensions:
+                extension_full_name = flatpak_ref_full_name(
+                    extension, arch, base_version
+                )
+                flatpak_install(
+                    remote, extension_full_name, installation, interactive, arch
+                )
+                base_app_extension_commit = find_flatpak_commit_for_date(
+                    remote, installation, extension_full_name, build_time
+                )
+                pin_package_version(
+                    extension_full_name,
+                    base_app_extension_commit,
+                    installation,
+                    interactive,
+                )
+                base_app_got_well_downgraded = check_program_version(
+                    remote,
+                    full_name,
+                    installation,
+                    base_app_commit,
+                    arch,
+                    try_to_solve=True,
+                )
+                statistics["flatpak-deps"][full_name] = base_app_commit
+                base_extensions = manifest.get("base-extensions")
 
     sdk_got_well_downgraded = list()
     for sdk_extension in sdk_extensions:
@@ -991,14 +1066,23 @@ def main():
             remote, installation, sdk_extension, build_time
         )
         pin_package_version(sdk_extension, extension_commit, installation, interactive)
-        sdk_got_well_downgraded.append(check_program_version(remote, sdk_extension, installation, extension_commit, arch, try_to_solve=True))
-        statistics['flatpak-deps'][sdk_extension] = extension_commit
+        sdk_got_well_downgraded.append(
+            check_program_version(
+                remote,
+                sdk_extension,
+                installation,
+                extension_commit,
+                arch,
+                try_to_solve=True,
+            )
+        )
+        statistics["flatpak-deps"][sdk_extension] = extension_commit
 
     builder_commit = find_flatpak_commit_for_date(
         remote, installation, full_builder_name, build_time
     )
     pin_package_version(full_builder_name, builder_commit, installation, interactive)
-    statistics['flatpak-deps'][full_builder_name] = builder_commit
+    statistics["flatpak-deps"][full_builder_name] = builder_commit
 
     install_path = installation_path(installation)
     ostree_checkout(
@@ -1008,38 +1092,58 @@ def main():
         root=(installation != "user"),
     )
 
-    sdk_full_name = flatpak_ref_full_name(manifest['sdk'],arch,manifest['runtime-version'])
-    sdk_commit = manifest['sdk-commit']
-    pin_package_version(
-        sdk_full_name,
-        sdk_commit,
-        installation,
-        interactive
+    sdk_full_name = flatpak_ref_full_name(
+        manifest["sdk"], arch, manifest["runtime-version"]
     )
+    sdk_commit = manifest["sdk-commit"]
+    pin_package_version(sdk_full_name, sdk_commit, installation, interactive)
 
-    statistics['flatpak-deps'][sdk_full_name] = sdk_commit
+    var = manifest.get("var")
+    if var:
+        var_commit = find_flatpak_commit_for_date(remote, installation, var, build_time)
+        pin_package_version(var, var_commit, installation, interactive)
 
-    runtime_full_name = flatpak_ref_full_name(manifest['runtime'],arch,manifest['runtime-version'])
-    runtime_commit = manifest['runtime-commit']
+    statistics["flatpak-deps"][sdk_full_name] = sdk_commit
+
+    runtime_full_name = flatpak_ref_full_name(
+        manifest["runtime"], arch, manifest["runtime-version"]
+    )
+    runtime_commit = manifest["runtime-commit"]
     # A bit overkill but that ensures everything is the same
-    pin_package_version(
-        runtime_full_name,
-        runtime_commit,
-        installation,
-        interactive
-    )
+    pin_package_version(runtime_full_name, runtime_commit, installation, interactive)
 
-    statistics['flatpak-deps'][runtime_full_name] = runtime_commit
+    statistics["flatpak-deps"][runtime_full_name] = runtime_commit
 
     # Make sure we downgraded things correctly (as you can guess this was not always the case hence the check)
     if not (
-            check_program_version(remote, sdk_full_name, installation, manifest["sdk-commit"], arch, try_to_solve=True) and
-            check_program_version(remote, runtime_full_name, installation, manifest["runtime-commit"], arch, try_to_solve=True) and
-            check_program_version(remote, FLATPAK_BUILDER, installation, builder_commit, arch, try_to_solve=True) and
-            (not False in sdk_got_well_downgraded) and
-            base_app_got_well_downgraded
-        ):
-        statistics['wrong_deps_detected'] = True
+        check_program_version(
+            remote,
+            sdk_full_name,
+            installation,
+            manifest["sdk-commit"],
+            arch,
+            try_to_solve=True,
+        )
+        and check_program_version(
+            remote,
+            runtime_full_name,
+            installation,
+            manifest["runtime-commit"],
+            arch,
+            try_to_solve=True,
+        )
+        and check_program_version(
+            remote,
+            FLATPAK_BUILDER,
+            installation,
+            builder_commit,
+            arch,
+            try_to_solve=True,
+        )
+        and (not False in sdk_got_well_downgraded)
+        and base_app_got_well_downgraded
+    ):
+        statistics["wrong_deps_detected"] = True
         statistics = json.dumps(statistics, indent=4)
         with open(f"{path}/{package_path_name}.stats.json", "w") as f:
             f.write(statistics)
@@ -1085,8 +1189,8 @@ def main():
     original_elf_hash = compute_folder_elf_hash(original_artifact)
     rebuild_elf_hash = compute_folder_elf_hash(rebuild_artifact)
 
-    bin_reproducible = (original_bin_hash == rebuild_bin_hash)
-    elf_reproducible = (original_elf_hash == rebuild_elf_hash)
+    bin_reproducible = original_bin_hash == rebuild_bin_hash
+    elf_reproducible = original_elf_hash == rebuild_elf_hash
 
     repro_score = compute_repro_score(original_artifact, rebuild_artifact)
     if repro_score is not None:
@@ -1094,7 +1198,6 @@ def main():
         statistics["bad_files"] = bad_files
         statistics["total_files"] = total_files
         statistics["repro_score"] = repro_score
-
 
     statistics["original_hash"] = original_hash
     statistics["rebuild_hash"] = rebuild_hash
@@ -1124,6 +1227,7 @@ def main():
         f.write(statistics)
 
     sys.exit(not reproducible)
+
 
 if __name__ == "__main__":
     main()

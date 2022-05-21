@@ -761,8 +761,7 @@ def compute_folder_bin_hash(path: str) -> str | None:
         return None
 
     # Forgive Me Father For I Have Sinned
-    cmd = f"""find {path} -type f -exec grep --null -IL . {{}} \; | LC_ALL=C sort -z
-    | xargs -0 sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"""
+    cmd = f"find {path} -type f -exec grep --null -IL . {{}} \; | LC_ALL=C sort -z | xargs -0 sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"
 
     result = subprocess.run(cmd, capture_output=True, shell=True)
 
@@ -777,8 +776,7 @@ def compute_folder_elf_hash(path: str) -> str | None:
     if not os.path.exists(path):
         return None
 
-    cmd = f"""find {path} -exec file {{}} \; | grep -i elf | cut -d: -f1 | LC_ALL=C sort -z
-    | xargs sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"""
+    cmd = f"find {path} -exec file {{}} \; | grep -i elf | cut -d: -f1 | LC_ALL=C sort -z | xargs sha1sum | sed 's/\s.*$//' | sha1sum | sed 's/\s.*$//'"
 
     result = subprocess.run(cmd, capture_output=True, shell=True)
 

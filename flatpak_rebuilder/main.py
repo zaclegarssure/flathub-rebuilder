@@ -669,14 +669,16 @@ def run_diffoscope(
 
     return subprocess.run(cmd).returncode
 
+
 def strip_non_determinism(path: str):
     """Run strip-nondeterminism on everyfiles inside path."""
     for root, _, files in os.walk(path):
         for f in files:
             path = os.path.join(root, f)
             if os.path.exists(path):
-                cmd = ['strip-nondeterminism', path]
+                cmd = ["strip-nondeterminism", path]
                 subprocess.run(cmd)
+
 
 def flatpak_uninstall(
     package: str, installation: str, interactive: bool, arch: str, force: bool = False
@@ -896,7 +898,6 @@ def main():
     diffoscope = args.diffoscope
     strip = args.strip
 
-
     # Make sure to avoid creating path issues. (It should not be needed actually)
     package_path_name = package.replace("/", "_")
     # Keep a few stats to analyse later on.
@@ -1020,7 +1021,7 @@ def main():
             break
     repo.submodule_update()
 
-    # Keep track of flatpak deps hashes (runtime, sdk, sdk-extension and base app)
+    # Keep track of flatpak deps hashes (runtime, sdk, sdk-extension and base app, base app extensions)
     statistics["flatpak-deps"] = dict()
 
     full_builder_name = f"{FLATPAK_BUILDER}/{arch}/stable"
@@ -1049,19 +1050,21 @@ def main():
     report = package_path_name + ".report.html"
 
     base_app = manifest.get("base")
-    base_app_got_well_downgraded = True
-    if base_app != None:
+    base_app_extensions = list()
+    base_app_name_commit = None
+    if base_app:
         base_version = manifest["base-version"]
         full_name = flatpak_ref_full_name(base_app, arch, base_version)
         flatpak_install(remote, full_name, installation, interactive, arch)
-        base_app_commit = find_flatpak_commit_for_date(
-            remote, installation, full_name, build_time
-        )
+
+        base_app_commit = manifest["base-commit"]
         pin_package_version(full_name, base_app_commit, installation, interactive)
         base_app_got_well_downgraded = check_program_version(
             remote, full_name, installation, base_app_commit, arch, try_to_solve=True
         )
         statistics["flatpak-deps"][full_name] = base_app_commit
+        base_app_name_commit = (full_name, base_app_commit)
+
         base_extensions = manifest.get("base-extensions")
         if base_extensions:
             for extension in base_extensions:
@@ -1080,16 +1083,12 @@ def main():
                     installation,
                     interactive,
                 )
-                base_app_got_well_downgraded = check_program_version(
-                    remote,
-                    full_name,
-                    installation,
-                    base_app_commit,
-                    arch,
-                    try_to_solve=True,
+                statistics["flatpak-deps"][
+                    extension_full_name
+                ] = base_app_extension_commit
+                base_app_extensions.append(
+                    (extension_full_name, base_app_extension_commit)
                 )
-                statistics["flatpak-deps"][full_name] = base_app_commit
-                base_extensions = manifest.get("base-extensions")
 
     sdk_extension_commit = list()
     for sdk_extension in sdk_extensions:
@@ -1136,19 +1135,26 @@ def main():
 
     statistics["flatpak-deps"][runtime_full_name] = runtime_commit
 
-    sdk_got_well_downgraded = list()
-    for extension, commit in sdk_extension_commit:
-        sdk_got_well_downgraded.append(
-            check_program_version(
-                remote,
-                extension,
-                installation,
-                commit,
-                arch,
-                try_to_solve=True,
-            )
-        )
     # Make sure we downgraded things correctly (as you can guess this was not always the case hence the check)
+    sdk_extensions_got_well_downgraded = list()
+    for extension, commit in sdk_extension_commit:
+        sdk_extensions_got_well_downgraded.append(
+            check_program_version(remote, extension, installation, commit, arch)
+        )
+
+    base_app_got_well_downgraded = True
+    if base_app_name_commit:
+        full_name, commit = base_app_name_commit
+        base_app_got_well_downgraded = check_program_version(
+            remote, full_name, installation, commit, arch
+        )
+
+    base_app_extensions_got_well_downgraded = list()
+    for extension, commit in base_app_extensions:
+        base_app_extensions_got_well_downgraded.append(
+            check_program_version(remote, extension, installation, commit, arch)
+        )
+
     if not (
         check_program_version(
             remote,
@@ -1156,7 +1162,6 @@ def main():
             installation,
             manifest["sdk-commit"],
             arch,
-            try_to_solve=True,
         )
         and check_program_version(
             remote,
@@ -1164,7 +1169,6 @@ def main():
             installation,
             manifest["runtime-commit"],
             arch,
-            try_to_solve=True,
         )
         and check_program_version(
             remote,
@@ -1172,9 +1176,9 @@ def main():
             installation,
             builder_commit,
             arch,
-            try_to_solve=True,
         )
-        and (not False in sdk_got_well_downgraded)
+        and not (False in sdk_extensions_got_well_downgraded)
+        and not (False in base_app_extensions_got_well_downgraded)
         and base_app_got_well_downgraded
     ):
         statistics["wrong_deps_detected"] = True
@@ -1184,6 +1188,7 @@ def main():
         shutil.move(original_artifact, f"{path}/{original_artifact}")
         raise Exception()
 
+    # Rebuild
     try:
         build_stats = rebuild(
             path, installation, package, metadatas["Branch"], arch, install=False

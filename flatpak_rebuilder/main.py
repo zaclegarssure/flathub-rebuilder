@@ -300,7 +300,7 @@ def pin_package_version(
     mask: bool
         If true will mask the package to avoid further update.
     """
-    cmd = ["flatpak", "update", package, "--commit=" + commit, "--no-deps"]
+    cmd = ["flatpak", "update", package, "--commit=" + commit, "--no-deps", "--no-related"]
     if not interactive:
         cmd.append("--noninteractive")
 
@@ -1058,22 +1058,13 @@ def main():
                 statistics["flatpak-deps"][full_name] = base_app_commit
                 base_extensions = manifest.get("base-extensions")
 
-    sdk_got_well_downgraded = list()
+    sdk_extension_commit = list()
     for sdk_extension in sdk_extensions:
         extension_commit = find_flatpak_commit_for_date(
             remote, installation, sdk_extension, build_time
         )
         pin_package_version(sdk_extension, extension_commit, installation, interactive)
-        sdk_got_well_downgraded.append(
-            check_program_version(
-                remote,
-                sdk_extension,
-                installation,
-                extension_commit,
-                arch,
-                try_to_solve=True,
-            )
-        )
+        sdk_extension_commit.append((sdk_extension, extension_commit))
         statistics["flatpak-deps"][sdk_extension] = extension_commit
 
     builder_commit = find_flatpak_commit_for_date(
@@ -1112,6 +1103,18 @@ def main():
 
     statistics["flatpak-deps"][runtime_full_name] = runtime_commit
 
+    sdk_got_well_downgraded = list() 
+    for extension, commit in sdk_extension_commit:
+        sdk_got_well_downgraded.append(
+            check_program_version(
+                remote,
+                extension,
+                installation,
+                commit,
+                arch,
+                try_to_solve=True,
+            )
+        )
     # Make sure we downgraded things correctly (as you can guess this was not always the case hence the check)
     if not (
         check_program_version(
@@ -1224,6 +1227,10 @@ def main():
     with open(f"{path}/{package_path_name}.stats.json", "w") as f:
         f.write(statistics)
 
+    if reproducible:
+        print(f"{package} is reproducible.")
+    else:
+        print(f"{package} is not reproducible, rebuild hash = {rebuild_hash}, original hash = {original_hash}.")
     sys.exit(not reproducible)
 
 

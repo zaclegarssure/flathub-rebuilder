@@ -122,9 +122,21 @@ def parse_args() -> Namespace:
     )
     parser.add_argument("flatpak_name", help="The name of the flatpak to reproduce")
     parser.add_argument(
+        "-d",
+        "--diffoscope",
+        help="When enabled, diffoscope will be use to diff the two results.",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-s",
+        "--strip",
+        help="When enabled, strip-nondeterminism will be run on the two results before diffing.",
+        action="store_true",
+    )
+    parser.add_argument(
         "-int",
         "--interactive",
-        help="If set, flatpaks install and build command will run in interactive mode, asking you for input.",
+        help="When enabled, flatpaks install and build command will run in interactive mode, asking you for input.",
         action="store_true",
     )
     parser.add_argument(
@@ -136,10 +148,13 @@ def parse_args() -> Namespace:
         "--arch",
         help="Cpu architeture to use for the build, by default will use the one available on the system.",
     )
-    parser.add_argument("--branch", help="Specify which branch of the flatpak to use.")
+    parser.add_argument(
+        "--branch",
+        help="Specify which branch of the flatpak to use, will use the latest one if not specified.",
+    )
     parser.add_argument(
         "--estimate-time",
-        help="Let flatpak rebuilder find a time estimate of the build by scraping binaries.",
+        help="Let flatpak rebuilder find a time estimate of the build by scraping binaries (it rarely works).",
         action="store_true",
     )
     parser.add_argument(
@@ -150,13 +165,13 @@ def parse_args() -> Namespace:
     install_group.add_argument(
         "-i",
         "--installation",
-        help="Specifies the local installation to use, by default it will use the user flatpak install.",
+        help="Specify the flatpak installation to use, will use the user installation by default.",
     )
     install_group.add_argument(
-        "--user", help="If sets, use user install.", action="store_true"
+        "--user", help="When enabled, use user install.", action="store_true"
     )
     install_group.add_argument(
-        "--system", help="If sets, use system install.", action="store_true"
+        "--system", help="When enabled, use system install.", action="store_true"
     )
 
     return parser.parse_args()
@@ -300,7 +315,14 @@ def pin_package_version(
     mask: bool
         If true will mask the package to avoid further update.
     """
-    cmd = ["flatpak", "update", package, "--commit=" + commit, "--no-deps", "--no-related"]
+    cmd = [
+        "flatpak",
+        "update",
+        package,
+        "--commit=" + commit,
+        "--no-deps",
+        "--no-related",
+    ]
     if not interactive:
         cmd.append("--noninteractive")
 
@@ -647,6 +669,14 @@ def run_diffoscope(
 
     return subprocess.run(cmd).returncode
 
+def strip_non_determinism(path: str):
+    """Run strip-nondeterminism on everyfiles inside path."""
+    for root, _, files in os.walk(path):
+        for f in files:
+            path = os.path.join(root, f)
+            if os.path.exists(path):
+                cmd = ['strip-nondeterminism', path]
+                subprocess.run(cmd)
 
 def flatpak_uninstall(
     package: str, installation: str, interactive: bool, arch: str, force: bool = False
@@ -863,6 +893,9 @@ def main():
     branch = args.branch
     beta = args.beta
     remote = "flathub" if not beta else "flathub-beta"
+    diffoscope = args.diffoscope
+    strip = args.strip
+
 
     # Make sure to avoid creating path issues. (It should not be needed actually)
     package_path_name = package.replace("/", "_")
@@ -1103,7 +1136,7 @@ def main():
 
     statistics["flatpak-deps"][runtime_full_name] = runtime_commit
 
-    sdk_got_well_downgraded = list() 
+    sdk_got_well_downgraded = list()
     for extension, commit in sdk_extension_commit:
         sdk_got_well_downgraded.append(
             check_program_version(
@@ -1177,9 +1210,20 @@ def main():
     # Clean up
     flatpak_uninstall(full_package_id, installation, interactive, arch)
 
-    # Unfortunatly, diffoscope sometimes crash, we therefore need to rely
-    # on a more traditional diffing method.
-    diffoscope_result = run_diffoscope(original_artifact, rebuild_artifact, report)
+    if strip:
+        strip_non_determinism(original_artifact)
+        strip_non_determinism(rebuild_artifact)
+
+    if diffoscope:
+        diffoscope_result = run_diffoscope(original_artifact, rebuild_artifact, report)
+        # Report is only created when build is not reproducible
+        if diffoscope_result != 0:
+            # Sometimes diffoscope fails, cool
+            if os.path.exists(report):
+                shutil.move(report, f"{path}/{report}")
+            else:
+                statistics["diffoscope_failed"] = True
+
     original_hash = compute_folder_hash(original_artifact)
     rebuild_hash = compute_folder_hash(rebuild_artifact)
     reproducible = original_hash == rebuild_hash
@@ -1215,14 +1259,6 @@ def main():
     shutil.move(original_artifact, f"{path}/{original_artifact}")
     shutil.move(rebuild_artifact, f"{path}/{rebuild_artifact}")
 
-    # Report is only created when build is not reproducible
-    if diffoscope_result != 0:
-        # Sometimes diffoscope fails, cool
-        if os.path.exists(report):
-            shutil.move(report, f"{path}/{report}")
-        else:
-            statistics["diffoscope_failed"] = True
-
     statistics = json.dumps(statistics, indent=4)
     with open(f"{path}/{package_path_name}.stats.json", "w") as f:
         f.write(statistics)
@@ -1230,7 +1266,9 @@ def main():
     if reproducible:
         print(f"{package} is reproducible.")
     else:
-        print(f"{package} is not reproducible, rebuild hash = {rebuild_hash}, original hash = {original_hash}.")
+        print(
+            f"{package} is not reproducible, rebuild hash = {rebuild_hash}, original hash = {original_hash}."
+        )
     sys.exit(not reproducible)
 
 

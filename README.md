@@ -76,4 +76,4 @@ and an ostree repo of the rebuild, the original and rebuild version of the progr
 Be aware that this requires root privileges at certain moment in order to downgrade packages, except if you use the user install.
 
 ## Security
-Even though the build is run in a sandbox, it will still run basically arbitrary code, so make sure to check what's written in the manifest file of the program you are about to rebuild, to decide if it cam be trusted or not. Or just run things in a Docker or a VM.
+Even though the build is run in a sandbox, it will still run basically arbitrary code, so make sure to check what's written in the manifest file of the program you are about to rebuild, to decide if it can be trusted or not. Or just run things in a Docker or a VM.

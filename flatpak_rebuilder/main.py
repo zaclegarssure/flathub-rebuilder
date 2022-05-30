@@ -1059,9 +1059,6 @@ def main():
 
         base_app_commit = manifest["base-commit"]
         pin_package_version(full_name, base_app_commit, installation, interactive)
-        base_app_got_well_downgraded = check_program_version(
-            remote, full_name, installation, base_app_commit, arch, try_to_solve=True
-        )
         statistics["flatpak-deps"][full_name] = base_app_commit
         base_app_name_commit = (full_name, base_app_commit)
 

@@ -71,16 +71,9 @@ Here is an example:
 $ flatpak-rebuilder org.gnome.Dictionary --installation=rebuilder --interactive
 ```
 This will create the `org.gnome.Dictionary` directory, with `build` and `repo` sub-directories that contains the rebuild
-and an ostree repo of the rebuild, the orginial and rebuild version of the programs are both checkout in the same directory, at `<package-name>.original` and `<package-name>.rebuild`.
+and an ostree repo of the rebuild, the original and rebuild version of the programs are both checkout in the same directory, at `<package-name>.original` and `<package-name>.rebuild`.
 
 Be aware that this requires root privileges at certain moment in order to downgrade packages, except if you use the user install.
 
-## Roadmap
-
-This roadmap is more for me to not forget what I should do and fix.
-
-- [x] Use the absolute name of the remote, rather than the local one
-- [x] Add step to generate comparable artifacts
-- [x] Add comparison of these artifacts with diffoscope support
-- [x] See if sdk-extensions versions may change the output.
-- [ ] Add a signing/verification mechanism, probably using [in-toto](https://in-toto.io/).
+## Security
+Even though the build is run in a sandbox, it will still run basically arbitrary code, so make sure to check what's written in the manifest file of the program you are about to rebuild, to decide if it cam be trusted or not. Or just run things in a Docker or a VM.

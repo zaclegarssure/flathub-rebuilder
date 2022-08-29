@@ -1,7 +1,7 @@
 
 <h1 align="center">
   <br>
-  <img src="https://github.com/HexHive/reprobuild-zacharie/blob/flatpak-rebuilder/Component%2013.png" alt="Flathub-rebuilder" width="300">
+  <img src="https://github.com/zaclegarssure/flathub-rebuilder/blob/main/Component%2013.png" alt="Flathub-rebuilder" width="300">
   <br>
   Flatpak Rebuilder
   <br>
